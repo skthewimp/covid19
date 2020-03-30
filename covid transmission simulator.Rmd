@@ -1,0 +1,427 @@
+---
+title: "Covid Spread Simulator"
+output: html_notebook
+---
+
+How dangerous is a shopping trip? What happens if you are in an in-person meeting? What happens at a conference? What happens at home? 
+
+Let's simulate all this
+
+```{r}
+lambda <- function(timePeriod, p = 0.5) {
+  # timePeriod, in hours, is the period of time you need to spend with an infected person in order to have a *p* chance of get infected yourself
+  return(- log (1-p)/timePeriod)
+}
+```
+
+```{r}
+transmissionProb <- function(timePeriod, lambda) {
+  # When the disease spreads with a parameter lambda, what is the likelihood you'll get infected when you spend *timePeriod* hours with an infected person? 
+  return(1 - exp(-lambda * timePeriod))
+}
+```
+
+```{r}
+lambda1 <- lambda(24)
+tibble(Time=1:240) %>%
+  mutate(Prob=transmissionProb(Time, lambda1)) %>%
+  ggplot(aes(x=Time, y=Prob)) + geom_point() + geom_line() + theme_minimal() + scale_y_continuous("Probability of transmission", labels=scales::percent) + ggtitle("Likelihood of getting infected when you spend N hours with an infected person", subtitle = "Assuming that if you spend 24 hours with an infected person, you're 50% likely to fall ill") + scale_x_continuous("Hours", breaks=seq(0,240,6))
+```
+
+
+How safe is it to go to a shop? 
+
+Let's assume there's one shopkeeper. Only one customer can visit the shop at a time, and each customer spends N minutes there. 
+
+This is similar to home delivery! 
+
+```{r}
+shopSimulate1 <- function(totalCustomers, initialIncidence, timePerCustomer, lambda, numSimulations = 1000) {
+  # *totalCustomers* customers come to the shop each day, only one at a time.
+  # initialy, *initialIncidence* (proportion) of them are infected. 
+  # They spend a time *timePerCustomer* (in minutes) at the shop, and the disease spreads at rate lambda PER HOUR
+  # Initially assume that the shopkeeper is not infected
+  # We'll run *numSimulations* simulations of this
+  shopkeeper <- F # initially the shopkeeper is not infected
+  numInfected <- rep(0, numSimulations)
+  shopkeeperInfected <- rep(F, numSimulations)
+  initInfected <- runif(totalCustomers) < initialIncidence # For now let's keep this constant across simulations
+  ## Update 30 March - we'll change this 
+  
+  transmissionProb <- 1 - exp(-lambda * timePerCustomer / 60)  # / 60 because lambda is in per hour, timePerCustomer is in per minute
+  mcMatrix <- matrix(runif(numSimulations * totalCustomers), nrow=numSimulations) < transmissionProb
+  newInfected <- rep(0, numSimulations)
+  for(rep in 1:numSimulations) {
+    initInfected <- rbinom(totalCustomers, 1, initialIncidence)  # Added so that we can start with a new base each time.
+    finalInfected <- initInfected
+    shopkeeper <- F
+    for(i in 1:totalCustomers) 
+      if(mcMatrix[rep, i])   # transmission happens at this step. If not, status quo
+        if(finalInfected[i] | shopkeeper) {
+          finalInfected[i] <- T
+          shopkeeper <- T
+        }
+    numInfected[rep] <- sum(finalInfected)
+    newInfected[rep] <- sum(finalInfected) - sum(initInfected) 
+    shopkeeperInfected[rep] <- shopkeeper
+  }
+  return(
+    tibble(
+      Sim=1:numSimulations,
+      NumInfected=numInfected,
+      ExtraInfections=newInfected,
+      ShopkeeperInfected=shopkeeperInfected
+    )
+  )
+
+    
+}
+```
+
+```{r}
+shopSimulate1(1000, 0.5, 2, lambda1, 10000) %>%
+  count(ExtraInfections)
+```
+
+```{r}
+deliveries <- tibble() 
+for(prior in c(0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5)) {
+  shopSimulate1(1000, prior, 2, lambda1, 100000) %>%
+    count(ExtraInfections) %>%
+    mutate(Prior=prior, Proportion=n/sum(n)) %>%
+    bind_rows(deliveries) ->
+    deliveries
+}
+
+
+
+
+
+```
+
+```{r}
+(
+deliveries %>%
+  ggplot(aes(x=ExtraInfections, y=Proportion)) + geom_col() + facet_wrap(~reorder(scales::percent(Prior, 0.1), Prior)) + scale_x_continuous("Number of additional people infected through delivery", breaks=0:(max(deliveries$ExtraInfections))) + theme_minimal() + scale_y_continuous('', labels=scales::percent) + theme(strip.text = element_text(face='bold')) + ggtitle("Incidence Of Extra Infections Through 2-minute Delivery, \nby base incidence of infection") 
+) +
+  (
+    deliveries %>%
+  filter(ExtraInfections > 0) %>%
+  ggplot(aes(x=ExtraInfections, y=Proportion)) + geom_col() + facet_wrap(~reorder(scales::percent(Prior, 0.1), Prior)) + scale_x_continuous("Number of additional people infected through delivery", breaks=1:(max(deliveries$ExtraInfections))) + theme_minimal() + scale_y_continuous('', labels=scales::percent) + geom_text(aes( label=scales::percent(Proportion, 0.1)), nudge_y=0.005, fontface='bold', size=3) + theme(strip.text = element_text(face='bold')) + ggtitle("Incidence Of Extra Infections Through 2-minute Delivery, \nby base incidence of infection", subtitle="Excluding case of zero extra infections")
+    
+  )
+```
+```{r}
+scales::percent(transmissionProb(20/60, lambda1))
+```
+
+
+Next, let's just assume that people arrive and leave by a Poisson process. Anyone inside the store at any given point in time can infect anyone else
+
+
+```{r}
+gc()
+```
+
+code for testing
+
+```{r}
+N <- 1000
+arrivalInterval <- 10
+serviceTime <- 5
+initialIncidence <- 0.1
+numShopkeepers <- 10
+```
+
+OK now let's admit up to N people into the shop.
+
+Gap between arrival of two consecutive people is exponential. Service time of each person is also exponential
+
+
+```{r}
+shopSimulate2 <- function(
+  N, 
+  arrivalInterval,
+  serviceTime,
+  initialIncidence,
+  numShopkeepers=1,  # they stay in the shop all the time
+  lambda # the disease transmission rate from an infected to an uninfected
+  #shopCapacity = 10000, # the number of people who can be in the shop at one time. If not there will be a queue outside
+)
+{
+  entryTimes <- cumsum(rexp(N, 1/arrivalInterval))
+  shoppingTimes <- rexp(N, 1/serviceTime)
+  initInfected <- runif(N) < initialIncidence
+  shoppers <- tibble(
+    Number=1:N, 
+    Entry=entryTimes,
+    Exit=entryTimes + shoppingTimes,
+    PriorInfection=initInfected,
+    LaterInfection=initInfected
+  ) %>%
+    bind_rows(  # adding the shopkeepers
+      tibble(
+        Number=(N+1):(N + numShopkeepers),
+        Entry=0,
+        Exit=max(entryTimes + shoppingTimes),
+        PriorInfection=F,
+        LaterInfection=F
+      )
+    )
+  shoppers %>%
+    gather(Activity, Time, -Number, -PriorInfection, -LaterInfection) %>%
+    arrange(Time) %>%
+    ungroup() %>%
+    mutate(
+      Change=ifelse(Activity=='Entry', 1, -1),
+      PeopleInShop=cumsum(Change) + numShopkeepers,
+      Interval=lead(Time,1)-Time,
+      numInitInfected=cumsum(ifelse(PriorInfection, Change, 0))
+    ) ->
+    shopActivity
+  shoppers %>%
+    mutate(InfectionTime = ifelse(PriorInfection, 0, NA)) ->
+    shoppers
+  
+  infectedInShop <- 0  # number of people currently in the shop who are infected
+  
+  for(i in 1:nrow(shopActivity)) {
+    infectedInShop <- infectedInShop + ifelse(shopActivity$LaterInfection[i], shopActivity$Change[i], 0)
+    
+    if(infectedInShop > 0)  { # There is at least one infected person in the shop. Else status quo. 
+      transProb <- 1 - exp(-lambda * shopActivity$Interval[i] * infectedInShop / 60)  # / 60 since times are in minutes nad lambda is per hour
+      
+      shoppers %>%
+        filter(Entry <= shopActivity$Time[i] & Exit > shopActivity$Time[i] & !LaterInfection) %>% # Shoppers in store at that time, and yet uninfected
+        mutate(Infected=runif(n()) < transProb) %>%
+        filter(Infected) %>%
+        pull(Number) ->
+        newlyInfected
+      
+      shoppers %>%
+        mutate(
+          LaterInfection=ifelse(Number %in% newlyInfected, T, LaterInfection),
+          InfectionTime=ifelse(Number %in% newlyInfected, shopActivity$Time[i], InfectionTime)
+          ) -> 
+        shoppers
+      
+      infectedInShop <- infectedInShop + length(newlyInfected)
+      
+      
+      shopActivity %>%
+        mutate(LaterInfection=ifelse(Number %in% newlyInfected & Time > shopActivity$Time[i], T, LaterInfection)) ->
+        shopActivity
+    }
+  }
+  
+  return(list(shoppers, shopActivity))
+}
+```
+
+```{r}
+shopSimulate2(1000, 1, 5, 0.05, 10, lambda1) ->
+  sim2
+
+sim2[[1]] %>%
+  filter(LaterInfection) %>%
+  arrange(InfectionTime) %>%
+  mutate(Total=cumsum(LaterInfection)) %>%
+  ggplot(aes(x=InfectionTime, y=Total)) + geom_point() + geom_line()
+
+
+
+sim21 <- sim2[[1]]
+sim22 <- sim2[[2]]
+
+sum(sim21$LaterInfection)
+
+sim21 %>%
+  select(Number, Entry, Exit) %>%
+  gather(Type, Time, -Number) %>%
+  arrange(Time) %>%
+  mutate(PeopleInShop=cumsum(ifelse(Type=='Entry', 1, -1))) %>%
+  ggplot(aes(x=Time, y=PeopleInShop)) + geom_point() + geom_line()
+```
+
+Simulate a 100 times and see
+```{r}
+
+sim1 <- tibble()
+for(i in 1:100) 
+  shopSimulate2(100, 5, 10, 0.05, 10, lambda1) %>%
+  .[[1]] %>%
+  mutate(Turn=i) %>%
+  bind_rows(sim1) ->
+  sim1
+
+sim1 %>%
+  filter(LaterInfection & InfectionTime > 0) %>%
+  arrange(InfectionTime) %>%
+  group_by(Turn) %>%
+  mutate(Total=cumsum(LaterInfection)) %>%
+  ggplot(aes(x=InfectionTime/60, y=Total, group=Turn)) + geom_line(alpha=0.3) + theme_minimal() + xlab('Time (Hours)') + ylab("Number of new infections") + ggtitle("Number of new people infected over time, with a total of 1000 people", "Initially about 50 customers are infected\nCustomers arrive in shop with average gap of 5 minutes and spend 10 minutes in shop\nThere are 10 shopkeepers")
+
+sim1 %>%
+  group_by(Turn) %>%
+  summarise(NewInfect=sum(LaterInfection-PriorInfection)) %>%
+  pull(NewInfect) %>%
+  summary()
+
+```
+
+```{r}
+
+sim2 <- tibble()
+for(i in 1:100) 
+  shopSimulate2(1000, 20, 10, 0.05, 10, lambda1) %>%
+  .[[1]] %>%
+  mutate(Turn=i) %>%
+  bind_rows(sim1) ->
+  sim2
+
+sim2 %>%
+  filter(LaterInfection & InfectionTime > 0) %>%
+  arrange(InfectionTime) %>%
+  group_by(Turn) %>%
+  mutate(Total=cumsum(LaterInfection)) %>%
+  ggplot(aes(x=InfectionTime/60, y=Total, group=Turn)) + geom_line(alpha=0.3) + theme_minimal() + xlab('Time (Hours)') + ylab("Number of new infections") + ggtitle("Number of new people infected over time, with a total of 1000 people", "Initially about 50 customers are infected\nCustomers arrive in shop with average gap of 5 minutes and spend 10 minutes in shop\nThere are 10 shopkeepers") + xlim(0, 80)
+
+
+sim2 %>%
+  group_by(Turn) %>%
+  summarise(NewInfect=sum(LaterInfection-PriorInfection)) %>%
+  pull(NewInfect) %>%
+  summary()
+```
+
+```{r}
+sim1 <- tibble()
+for(i in 1:20) 
+  for(prior in seq(0.001, 0.01, 0.05, 0.1, 0.2, 0.5))
+  shopSimulate2(100, 5, 10, prior, 1, lambda1) %>%
+  .[[1]] %>%
+  mutate(Turn=i) %>%
+  bind_rows(sim1) ->
+  sim1
+
+sim1 %>%
+  filter(LaterInfection & InfectionTime > 0) %>%
+  arrange(InfectionTime) %>%
+  group_by(Turn) %>%
+  mutate(Total=cumsum(LaterInfection)) %>%
+  ggplot(aes(x=InfectionTime, y=Total, group=Turn)) + geom_point() + geom_line()
+```
+
+
+
+
+Next, simulate a company.
+
+Bunch of N people, of whom n are initially infected, spending T minutes with each other
+
+```{r}
+meetingSimulate <- function(N, n, T, lambda, numPaths = 1000) {
+  # N is total number of people
+  # n in initially infected number
+  # T is time they spend together (Hours)
+  # lambda is rate of  transmission (in hours)
+  
+  # Let's assume we sample at one minute
+  # Here it DOEESN'T MATTER who is infected. Just the totla number matters
+  pathLength <- T * 60
+  
+  numInfected <- rep(n, numPaths)
+  infectedTime <- rbind(numInfected, mat.or.vec(pathLength, numPaths))
+  
+  for(t in 1:pathLength) {
+     transProb <- 1 - exp(-lambda * 1 / 60 * numInfected)  # / 60 since times are in minutes nad lambda is per hour
+     additionalInfected <- rbinom(numPaths, N-numInfected, transProb)
+     numInfected <- numInfected + additionalInfected
+     infectedTime[t+1, ] <- numInfected
+  }
+  row.names(infectedTime) <- (0:pathLength) / 60
+  colnames(infectedTime) <- 1:numPaths
+  reshape::melt(infectedTime) %>%
+    as_tibble() %>%
+    rename(Time=X1, Path=X2, Infected=value) %>%
+    return()
+  #return(infectedTime)
+}
+```
+
+```{r}
+meetingSimulate(10, 1, 8, lambda1, 10000) %>%
+  filter(Time==max(Time)) %>%
+  mutate(Infected=Infected-1) %>%
+  pull(Infected) %>%
+  summary()
+
+```
+
+```{r}
+
+meetingSimulate(40, 1, 4, lambda1, 100) %>%
+  ggplot(aes(x=Time, y=Infected, group=Path)) + geom_line(alpha=0.2, lwd=0.5) + theme_minimal() + xlab("Time (hours)") + ylab("Infected people") + ggtitle("A 40 person meeting in a closed room over 4 hours", subtitle = "1 infected person at beginning of meeting")
+```
+
+Small change in model. Not everyone mgiht come into contact with everyone else each minute. Assume each person will come into contact with m random people each minute
+```{r}
+conferenceSimulate <- function(N, n, T, lambda, groupSize=N, numPaths = 1000) {
+  # N is total number of people
+  # n in initially infected number
+  # T is time they spend together (Hours)
+  # lambda is rate of  transmission (in hours)
+  
+  # Let's assume we sample at one minute
+  # Here it DOEESN'T MATTER who is infected. Just the totla number matters
+  pathLength <- T * 60
+  
+  numInfected <- rep(n, numPaths)
+  infectedTime <- rbind(numInfected, mat.or.vec(pathLength, numPaths))
+  
+  for(t in 1:pathLength) {
+     transProb <- 1 - exp(-lambda * 1 / 60 * numInfected * groupSize / N )  # / 60 since times are in minutes nad lambda is per hour; also if you come into contact with groupSize people at a time, number of infected you come in contact with also decreases proportionally 
+     additionalInfected <- rbinom(numPaths, N-numInfected, transProb)
+     numInfected <- numInfected + additionalInfected
+     infectedTime[t+1, ] <- numInfected
+  }
+  row.names(infectedTime) <- (0:pathLength) / 60
+  colnames(infectedTime) <- 1:numPaths
+  reshape::melt(infectedTime) %>%
+    as_tibble() %>%
+    rename(Time=X1, Path=X2, Infected=value) %>%
+    return()
+  #return(infectedTime)
+}
+```
+
+```{r}
+(conferenceSimulate(100, 1, 8, lambda1, 2, 10000) %>%
+  filter(Time==max(Time)) %>%
+  mutate(Additional=Infected-1) %>%
+  count(Additional) %>%
+  mutate(n=n/sum(n))%>%
+  ggplot(aes(x=Additional, y=n, label=scales::percent(n,1))) + geom_col() + geom_text(col='white', nudge_y=-0.03, fontface='bold', size=3) + scale_x_continuous("Additional people infected", breaks=0:100, labels=0:100) + theme_minimal() + theme_minimal() + scale_y_continuous('Prbability', breaks=c()) + theme(strip.text = element_text(face='bold')) + ggtitle("Additional infections after a 100-person day-long conference", subtitle="People congregating two at a time")
+) +
+(conferenceSimulate(100, 1, 8, lambda1, 3, 10000) %>%
+  filter(Time==max(Time)) %>%
+  mutate(Additional=Infected-1) %>%
+  count(Additional) %>%
+  mutate(n=n/sum(n))%>%
+  ggplot(aes(x=Additional, y=n, label=scales::percent(n,1))) + geom_col() + geom_text(col='white', nudge_y=-0.03, fontface='bold', size=3) + scale_x_continuous("Additional people infected", breaks=0:100, labels=0:100) + theme_minimal() + theme_minimal() + scale_y_continuous('Prbability', breaks=c()) + theme(strip.text = element_text(face='bold')) + ggtitle("Additional infections after a 100-person day-long conference", subtitle="People congregating three at a time")
+) +
+  (conferenceSimulate(100, 1, 8, lambda1, 5, 10000) %>%
+  filter(Time==max(Time)) %>%
+  mutate(Additional=Infected-1) %>%
+  count(Additional) %>%
+  mutate(n=n/sum(n))%>%
+  ggplot(aes(x=Additional, y=n, label=scales::percent(n,1))) + geom_col() + geom_text(col='white', nudge_y=-0.03, fontface='bold', size=3) + scale_x_continuous("Additional people infected", breaks=0:100, labels=0:100) + theme_minimal() + theme_minimal() + scale_y_continuous('Prbability', breaks=c()) + theme(strip.text = element_text(face='bold')) + ggtitle("Additional infections after a 100-person day-long conference", subtitle="People congregating five at a time")
+) + 
+  (conferenceSimulate(100, 1, 8, lambda1, 10, 10000) %>%
+  filter(Time==max(Time)) %>%
+  mutate(Additional=Infected-1) %>%
+  count(Additional) %>%
+  mutate(n=n/sum(n))%>%
+  ggplot(aes(x=Additional, y=n, label=scales::percent(n,1))) + geom_col() + geom_text(col='white', nudge_y=-0.03, fontface='bold', size=3) + scale_x_continuous("Additional people infected", breaks=0:100, labels=0:100) + theme_minimal() + theme_minimal() + scale_y_continuous('Prbability', breaks=c()) + theme(strip.text = element_text(face='bold')) + ggtitle("Additional infections after a 100-person day-long conference", subtitle="People congregating ten at a time")
+)
+```
