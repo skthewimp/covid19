@@ -1,4 +1,3 @@
-setwd('~/covid/')
 require(patchwork)
 require(sf)
 require(tidyverse)
