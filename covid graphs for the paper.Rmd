@@ -1,0 +1,47 @@
+---
+title: "Covid Paper"
+output: html_notebook
+---
+. 
+
+```{r}
+setwd('~/Documents/work/data work/')
+require(tidyverse)
+covid <- read_csv('https://api.covid19india.org/csv/latest/state_wise_daily.csv')
+```
+
+```{r}
+covid %>%
+  gather(State, Number, -Date, -Status) %>%
+  mutate(Date=as.Date(Date, '%d-%b-%y')) %>%
+  arrange(State, Status, Date) %>%
+  group_by(State, Status) %>%
+  mutate(Total=cumsum(Number)) %>%
+  select(-Number) %>%
+  spread(Status, Total) %>%
+  mutate(Active=Confirmed-Deceased-Recovered) %>%
+  arrange(-Confirmed) %>%
+  filter(State=='TT') %>%
+  gather(Type, Number, -Date, -State) %>%
+  mutate(Label=ifelse(Date==max(Date), Type, '')) %>%
+  ggplot(aes(x=Date, y=Number, col=Type, label=Label)) + geom_line(lwd=1) + theme_minimal() + geom_text(hjust=1.2,vjust=0, fontface='bold') + scale_colour_brewer(palette="Set1") + theme(legend.position = 'none', title=element_text(face='bold', size=16), text=element_text(face='bold')) + xlab('') + scale_y_continuous('', labels=scales::label_number_si()) + labs(title="Number of known covid-19 positive cases in India", caption="(c) The Paper (Suprio Guha Thakurta and Karthik Shashidhar)\nData Source: covid19india.org")
+```
+
+```{r}
+rd3 %>%
+  filter((`Detected District` %in% c("Mumbai", "Chennai", "Bengaluru Urban") | `Detected State`=='Delhi') & `Current Status`=='Hospitalized') %>%
+  group_by(Date=`Date Announced`, City=`Detected District`) %>%
+  summarise(Cases=sum(`Num Cases`)) %>%
+  ungroup() %>%
+  mutate(
+    City=coalesce(City, "Delhi"),
+    Date=as.Date(Date, '%d/%m/%Y')
+    )  %>%
+  ggplot(aes(x=Date, y=Cases, col=City)) + geom_point() + geom_smooth(se=F, lwd=1.5, method='loess', formula='y~x')+ theme_minimal()  + scale_colour_brewer(palette="Set1") + theme(legend.position = c(0.2,0.8), legend.title=element_blank(), title=element_text(face='bold'), text=element_text(face='bold')) + xlab('') + scale_y_continuous('', labels=scales::label_number_si()) + labs(title="Number of new covid-19 positive cases by day", subtitle = 'Four largest cities in India', caption="(c) The Paper (Suprio Guha Thakurta and Karthik Shashidhar)\nData Source: covid19india.org")
+```
+
+```{r}
+rd3 %>%
+  count(`Current Status`)
+```
+

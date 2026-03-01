@@ -1,0 +1,198 @@
+---
+title: "Imitating Kevin Systrom"
+output: html_notebook
+---
+
+```{r}
+require(tidyverse)
+setwd('~/Documents/work/data work/')
+```
+
+
+```{r}
+covidindia <- read_csv('https://api.covid19india.org/csv/latest/raw_data.csv', col_types = cols()) %>%
+  mutate(`Age Bracket`=as.numeric(`Age Bracket`))
+
+
+```
+
+```{r}
+
+rd3 <- read_csv('https://api.covid19india.org/csv/latest/raw_data3.csv', col_types = cols())
+rd4 <- read_csv('https://api.covid19india.org/csv/latest/raw_data4.csv', col_types = cols())
+rd5 <- read_csv('https://api.covid19india.org/csv/latest/raw_data5.csv', col_types = cols())
+bind_rows(rd3, rd4, rd5) -> rd3
+```
+
+```{r}
+covidindia %>%
+  mutate(Date=as.Date(`Date Announced`, '%d/%m/%Y')) %>%
+  distinct(`Patient Number`, .keep_all = T) %>%
+  rename(State=`Detected State`, District=`Detected District`, City=`Detected City`) %>%
+  count(Date, State, District, City, name = 'Cases') %>%
+  bind_rows(
+    rd3 %>%
+      filter(`Current Status` != "Recovered") %>%
+      mutate(Date=as.Date(`Date Announced`, '%d/%m/%Y')) %>%
+      rename(State=`Detected State`, District=`Detected District`, City=`Detected City`) %>%
+      group_by(Date, State, District, City) %>%
+      summarise(Cases=sum(`Num Cases`))
+  ) %>%
+  filter(!is.na(Cases)) ->
+  dailyCases
+```
+
+```{r}
+
+dailyCases %>%
+  group_by(Date) %>%
+  summarise(n=sum(Cases)) %>%
+  filter(Date >= as.Date('2020-03-15') & Date < Sys.Date()) -> 
+  casesPerDay
+```
+
+```{r}
+```
+
+Now to build a Bayesian model
+```{r}
+newLikelihood <- function(
+  todayCases, # number of cases discovered today
+  yesterdayCases,  # number of cases discovered yesterday 
+  rtvals, # a vector, wtih the possible values for Rt
+  daysToHospital = 5  # this controls how much the disease spreads in a day
+) {
+  lambdas <- yesterdayCases * rtvals^(1/daysToHospital)
+  todayLikelihood <- dpois(todayCases, lambdas)
+  return(todayLikelihood / sum(todayLikelihood)) # return logs so that we can window easily
+}
+
+calcRt <- function(casesPerDay, maxR = 12, rStep = 0.01, confidence=0.95) {
+  
+  casesPerDay %>%
+    mutate(n=ifelse(n==0, 1, n)) ->
+    casesPerDay
+  r0vals <- seq(rStep, maxR, rStep)
+  
+  likelihoodMat <- mat.or.vec(length(r0vals), nrow(casesPerDay))
+  
+  for(i in 2:ncol(likelihoodMat)) {
+    likelihoodMat[,i] <- newLikelihood(casesPerDay$n[i], casesPerDay$n[i-1], r0vals)
+  }
+  
+  windowSize <- 7 
+  
+  rollingLikelihood <- likelihoodMat
+  
+  modert <- rep(0,ncol(rollingLikelihood)-windowSize)
+  lowerlimitrt <- rep(0,ncol(rollingLikelihood)-windowSize)
+  upperlimitrt <- rep(0,ncol(rollingLikelihood)-windowSize)
+  for(i in (windowSize+1):ncol(rollingLikelihood)) {
+    rollingLikelihood[,i] <- apply(likelihoodMat[,(i-windowSize+1):i], 1, prod)
+    rollingLikelihood[,i] <- rollingLikelihood[,i] / sum(rollingLikelihood[,i])
+    cumul <- cumsum(rollingLikelihood[,i])
+    modert[i-windowSize] <- r0vals[which(rollingLikelihood[,i] == max(rollingLikelihood[,i]))]
+    lowerlimitrt[i-windowSize] <- max(r0vals[sum(cumul <= (1-confidence)/2)])
+    upperlimitrt[i-windowSize] <- min(r0vals[sum(cumul <= 1-(1-confidence)/2)])
+  }
+  
+  # print(lowerlimitrt)
+  # print(upperlimitrt)
+  # print(modert)
+  
+  casesPerDay[(windowSize+1):nrow(casesPerDay),] %>%
+    mutate(
+      Rt_mean = t(t(r0vals) %*% rollingLikelihood[,(windowSize+1):ncol(rollingLikelihood)]),
+      Rt_mode = modert,
+      LowerLimit=lowerlimitrt[!is.na(lowerlimitrt)],
+      UpperLimit=upperlimitrt[!is.na(upperlimitrt)]
+    ) %>%
+    return()
+  
+}
+
+calcRt(casesPerDay) %>%
+  gather(Type, Value, -Date, -n, -LowerLimit, -UpperLimit) %>%
+  ggplot(aes(x=Date, y=Value, col=Type, label=round(Value, 1)))  + geom_point() + geom_line() + geom_ribbon(aes(ymin=LowerLimit, ymax=UpperLimit), fill='grey', alpha=0.2) +  geom_text(nudge_y=0.2, size=3, fontface='bold') + theme_bw() + xlab('') + ggtitle("R_t estimation by day") + scale_y_continuous(breaks=c()) + scale_colour_brewer(palette='Set1') + geom_hline(yintercept = 1, col='black', lty=1, lwd=1)
+
+```
+
+```{r}
+calcRt(casesPerDay) %>%
+  ggplot(aes(x=Date, y=Rt_mean, label=round(Rt_mean, 1)))  + geom_point() + geom_line(col='red') + geom_ribbon(aes(ymin=LowerLimit, ymax=UpperLimit), fill='grey', col='blue', alpha=0.3) +  geom_text(nudge_y=0.2, size=3, fontface='bold') + theme_bw() + scale_x_date('', date_breaks = '1 week') + labs(title="R_t estimation by day - All India", subtitle="Using Kevin Systrom's algorithm from https://rt.live/", caption='(c) Karthik Shashidhar\nData source: covid19india.org\nUsing code from https://github.com/k-sys/covid-19/blob/master/Realtime%20R0.ipynb') + scale_y_continuous("R_t", breaks=c()) + scale_colour_brewer(palette='Set1') + geom_hline(yintercept = 1, col='blue', lty=2, lwd=0.5) + theme(title=element_text(size=16, face='bold'), text=element_text(size=12, face='bold'))
+```
+
+```{r}
+i
+```
+
+```{r}
+dailyCases %>%
+  group_by(Date, State) %>%
+  summarise(n=sum(Cases)) %>%
+  ungroup() %>%
+  filter(Date >= as.Date('2020-03-15') & Date < Sys.Date() & n > 0) %>%
+  filter(State != "State Unassigned") %>%
+  complete(Date, State, fill=list(n=0)) %>%
+  arrange(State, Date) %>%
+  group_by(State) %>%
+  filter(sum(n) >= 500) -> 
+  casesPerDayState
+
+stateWise <- tibble()
+for(state in unique(casesPerDayState$State)) {
+  casesPerDayState %>%
+    filter(State==state) %>%
+    calcRt() %>%
+    bind_rows(stateWise) ->
+    stateWise
+  
+}
+stateWise %>%
+  filter(Date >= Sys.Date()-15) %>%
+  ggplot(aes(x=Date, y=Rt_mode, label=round(Rt_mode, 1)))  + geom_point() + geom_line(col='red') + geom_ribbon(aes(ymin=LowerLimit, ymax=UpperLimit), fill='grey', alpha=0.5) + geom_text(nudge_y=0.2, size=3, fontface='bold') + theme_bw() + xlab('') + ggtitle("R_t estimation by day") + scale_y_continuous(breaks=c()) + scale_colour_brewer(palette='Set1') + facet_wrap(~State, scales='free')
+```
+
+```{r}
+stateWise %>%
+  filter(Date >= as.Date('2020-05-01')) %>%
+  ggplot(aes(x=Date, y=Rt_mode, label=round(Rt_mode, 1)))  + geom_point(col='red') + geom_line(col='red') + geom_ribbon(aes(ymin=LowerLimit, ymax=UpperLimit), fill='grey', alpha=0.5, col='blue') + theme_bw() + xlab('') + ggtitle("R_t estimation by day") + scale_colour_brewer(palette='Set1') + facet_wrap(~State, scales='free') + geom_hline(yintercept = 1, col='blue', lty=2, lwd=0.5)  + labs(title="R_t estimation by day - States", subtitle="Using Kevin Systrom's algorithm from https://rt.live/", caption='(c) Karthik Shashidhar\nData source: covid19india.org\nUsing code from https://github.com/k-sys/covid-19/blob/master/Realtime%20R0.ipynb') + scale_y_continuous("R_t")  + geom_hline(yintercept = 1, col='blue', lty=2, lwd=0.5) + theme(title=element_text(size=16, face='bold'), text=element_text(size=12, face='bold'))
+```
+
+```{r}
+casesPerDayState %>%
+  filter(State=='Punjab')
+```
+
+
+Let's do for Karnataka only, excluding the imported cases
+```{r}
+covidindia %>%
+  filter(`Detected State`=='Karnataka') %>%
+  bind_rows(
+    rd3 %>%
+      filter(`Detected State`=='Karnataka' & `Current Status` !='Recovered' & !is.na(`State Patient Number`))
+  ) %>%
+  mutate(
+    Date=as.Date(`Date Announced`, '%d/%m/%Y'),
+    Travel=str_detect(str_to_lower(Notes), 'travel') | str_detect(str_to_lower(Notes), 'return')
+  ) %>%
+  count(Travel, Date) %>%
+  group_by(Date) %>%
+  summarise(Travel=sum(n[Travel], na.rm=T), Total=sum(n, na.rm=T)) %>%
+  arrange(desc(Date)) %>%
+  mutate(Local=Total-Travel) %>%
+  select(Date, n=Local) %>%
+  arrange(Date)->
+  covidKar
+```
+
+```{r}
+calcRt(covidKar) %>%
+  ggplot(aes(x=Date, y=Rt_mean, label=round(Rt_mean, 1)))  + geom_point() + geom_line(col='red') + geom_ribbon(aes(ymin=LowerLimit, ymax=UpperLimit), fill='grey', alpha=0.3) +  geom_text(nudge_y=0.2, size=3, fontface='bold') + theme_bw() + scale_x_date('', date_breaks = '1 week') + labs(title="R_t estimation by day - Local transmission in Karnataka", subtitle="Using Kevin Systrom's algorithm from https://rt.live/", caption='(c) Karthik Shashidhar\nData source: covid19india.org\nUsing code from https://github.com/k-sys/covid-19/blob/master/Realtime%20R0.ipynb') + scale_y_continuous("R_t", breaks=c()) + scale_colour_brewer(palette='Set1') + geom_hline(yintercept = 1, col='blue', lty=2, lwd=0.5) + theme(title=element_text(size=16, face='bold'), text=element_text(size=12, face='bold'))
+```
+
+```{r}
+gamma(3)
+```
+

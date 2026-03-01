@@ -1,0 +1,309 @@
+---
+title: "New Covid Tracker"
+output: html_notebook
+---
+The old notebook has gotten really clogged so starting a new one 
+
+```{r}
+require(patchwork)
+require(tidyverse)
+
+```
+
+```{r}
+i <- 3
+rd3 <- tibble() 
+flag <- TRUE
+while(flag) {
+  url <- paste0('https://api.covid19india.org/csv/latest/raw_data',i,'.csv')
+  l1 <- nrow(rd3)
+  a <- tryCatch({
+    rd4 <- read_csv(url, col_types = cols()) %>%
+      select(-`Contracted from which Patient (Suspected)`)
+    rd3 %>% 
+      bind_rows(rd4) ->
+      rd3
+    i <- i + 1
+    print(paste(i, nrow(rd3)))
+    flag <- T
+  },
+  error= function(cond) {
+    print(cond)
+    print(paste('file', i, 'doesnt exist'))
+    flag <- F
+  }
+  )
+  l2 <- nrow(rd3)
+  if(l1 == l2) break
+}
+
+
+
+```
+
+
+```{r}
+rd3 %>%
+  filter(!is.na(`State Patient Number`)) %>%
+  count(`Detected State`)
+
+rd3 %>%
+  filter(!is.na(`Age Bracket`)) %>%
+  count(`Detected State`, sort=T)
+
+
+
+```
+
+Personalised data is mostly available only for Karnataka and Tamil Nadu and Bihar. Let's stick to these. 
+
+Before that let's check dates
+
+```{r}
+rd3 %>%
+  mutate(Date=as.Date(`Date Announced`, '%d/%m/%Y')) %>%
+  filter(!is.na(`Age Bracket`)) %>%
+  group_by(`Detected State`) %>%
+  summarise(
+    Earliest=min(Date),
+    Latest=max(Date),
+    Num=n()
+  ) %>%
+  arrange(-Num)
+
+```
+
+
+```{r}
+rd3 %>%
+  mutate(Date=as.Date(`Date Announced`, '%d/%m/%Y')) %>%
+  filter(!is.na(`Age Bracket`) & `Detected State` %in% c("Karnataka", "Bihar")) %>%
+  arrange(Date) %>%
+  distinct(`Patient Number`, .keep_all = T)
+
+```
+
+Now for both Karnataka and Bihar, let's look at the median age by week
+```{r}
+rd3 %>%
+  mutate(Date=as.Date(`Date Announced`, '%d/%m/%Y')) %>%
+  filter(!is.na(`Age Bracket`) & `Detected State` %in% c("Karnataka", "Bihar")) %>%
+  arrange(Date) %>%
+  distinct(`Patient Number`, .keep_all = T) %>%
+  mutate(Week=lubridate::floor_date(Date, '1 week')) %>%
+  group_by(State=`Detected State`, Week) %>%
+  summarise(MedianAge=median(`Age Bracket`)) %>%
+  ggplot(aes(x=Week, y=MedianAge, col=State)) + geom_point() + geom_line()
+
+```
+
+Just median doesnt give much info. Let's see distribution by week 
+
+```{r}
+require(ggridges)
+rd3 %>%
+  mutate(Date=as.Date(`Date Announced`, '%d/%m/%Y')) %>%
+  filter(!is.na(`Age Bracket`) & `Detected State` %in% c("Karnataka", "Bihar")) %>%
+  arrange(Date) %>%
+  distinct(`Patient Number`, .keep_all = T) %>%
+  mutate(Week=lubridate::floor_date(Date, '1 week')) %>%
+  ggplot(aes(x=`Age Bracket`, y=reorder(str_wrap(paste(format(Week, '%d-%b'), format(Week+6, '%d-%b'), sep=' - '), 5), desc(Week)))) + geom_density_ridges2() + facet_wrap(~`Detected State`)
+```
+
+Now let's just do for Karnataka for publication purposes
+
+```{r}
+rd3 %>%
+  mutate(Date=as.Date(`Date Announced`, '%d/%m/%Y')) %>%
+  filter(!is.na(`Age Bracket`) & `Detected State` %in% c("Karnataka")) %>%
+  arrange(Date) %>%
+  distinct(`State Patient Number`, .keep_all = T) %>%
+  mutate(
+    Week=lubridate::floor_date(Date, '1 week'),
+    Label=ifelse(format(Week,'%m')==format(Week+6, '%m'), paste0(format(Week, '%d'), '-', format(Week+6, '%d'), ' ', format(Week, '%b')), paste0(format(Week, '%d-%b'), ' - ', format(Week+6, '%d-%b')))
+  ) %>%
+  ggplot(aes(x=`Age Bracket`, y=reorder(Label, desc(Week)))) + geom_density_ridges() + theme_minimal() + scale_x_continuous('Age',) + scale_y_discrete('') + theme(title = element_text(face='bold', size=12), text=element_text(face='bold')) + labs(title="Age Distribution of Covid-19 positive patients in Karnataka", subtitle = "By week when case was discovered", caption="© Karthik Shashidhar (@karthiks)\n Data source: covid19india.org")
+```
+
+```{r}
+rd3 %>%
+  mutate(Date=as.Date(`Date Announced`, '%d/%m/%Y')) %>%
+  filter(!is.na(`Age Bracket`) & `Detected State` %in% c("Karnataka")) %>%
+  arrange(Date) %>%
+  distinct(`State Patient Number`, .keep_all = T) %>%
+  mutate(
+    Week=lubridate::floor_date(Date, '1 week'),
+    Label=ifelse(format(Week,'%m')==format(Week+6, '%m'), paste0(format(Week, '%d'), '-', format(Week+6, '%d'), ' ', format(Week, '%b')), paste0(format(Week, '%d-%b'), ' - ', format(Week+6, '%d-%b')))
+  ) %>%
+  ggplot(aes(x=`Age Bracket`, y=reorder(Label, desc(Week)))) +  geom_density_ridges(stat = "binline", binwidth=5, scale = 0.95, draw_baseline = FALSE) + theme_minimal() + scale_x_continuous('Age',) + scale_y_discrete('') + theme(title = element_text(face='bold', size=12), text=element_text(face='bold')) + labs(title="Age Distribution of Covid-19 positive patients in Karnataka", subtitle = "By week when case was discovered", caption="© Karthik Shashidhar (@karthiks)\n Data source: covid19india.org")
+```
+
+```{r}
+covid <- read_csv('https://api.covid19india.org/csv/latest/state_wise_daily.csv')
+```
+
+```{r}
+covid %>%
+  mutate(Date=as.Date(Date, '%d-%b-%y')) %>%
+  gather(State, Number, -Date, -Status) %>%
+  arrange(Date, Status, State) %>%
+  group_by(State, Status) %>%
+  mutate(Total=cumsum(Number)) %>%
+  ggplot(aes(x=Date, y=Total, col=Status)) + geom_point() + geom_line() + facet_wrap(~State, scales='free')
+```
+
+```{r}
+covid %>%
+  mutate(Date=as.Date(Date, '%d-%b-%y')) %>%
+  gather(State, Number, -Date, -Status) %>%
+  spread(Status, Number) %>%
+  mutate(Active=Confirmed-Recovered-Deceased) %>%
+  arrange(Date, State) %>%
+  group_by(State) %>%
+  mutate(
+    Total=cumsum(Active),
+    Last=max(Total),
+    Label=paste(State, scales::label_number_si(.1)(Last), 'cases')
+  ) %>%
+  filter(Last >= 1000) %>%
+  ggplot(aes(x=Date, y=Total)) + geom_point() + geom_line() + facet_wrap(~reorder(Label, -Last), scales='free_y') + theme_bw() + ggtitle("Total Active Cases") + scale_y_continuous('Active cases', labels=scales::label_number_si()) + xlab('') + theme(text=element_text(face='bold', size=12), title=element_text(face='bold', size=15), strip.text = element_text(face='bold', hjust=0))
+```
+
+```{r}
+covid %>%
+  mutate(Date=as.Date(Date, '%d-%b-%y')) %>%
+  gather(State, Number, -Date, -Status) %>%
+  spread(Status, Number) %>%
+  arrange(Date, State) %>%
+  group_by(State) %>%
+  mutate(
+    Total=cumsum(Deceased),
+    Last=max(Total),
+    Label=paste(State, scales::label_number_si()(Last), 'deaths')
+  ) %>%
+  filter(Last >= 100) %>%
+  ggplot(aes(x=Date, y=Total)) + geom_point() + geom_line() + facet_wrap(~reorder(Label, -Last), scales='free_y') + theme_bw() + ggtitle("Total Deaths") + scale_y_continuous('Covid Deaths', labels=scales::label_number_si()) + xlab('') + theme(text=element_text(face='bold', size=12), title=element_text(face='bold', size=15), strip.text = element_text(face='bold', hjust=0))
+```
+
+
+```{r}
+deathRate <- function(covid, avgDays) {
+  covid %>%
+    mutate(Date=as.Date(Date, '%d-%b-%y')) %>%
+    gather(State, Number, -Date, -Status) %>%
+    spread(Status, Number) %>%
+    arrange(State, Date) -> 
+    cov1
+  
+  # Need to smooth everything by 7 days 
+  cov1 %>%
+    arrange(State, Date) %>%
+    group_by(State) %>%
+    mutate(
+      TotalConfirmed=cumsum(Confirmed),
+      TotalDeceased=cumsum(Deceased),
+      ConfirmedMA=(TotalConfirmed-lag(TotalConfirmed, 7))/7,
+      DeceasedMA=(TotalDeceased-lag(TotalDeceased, 7))/ 7
+    ) %>%
+    ungroup() %>%
+    filter(!is.na(ConfirmedMA)) %>%
+    select(State, Date, Deceased=DeceasedMA, Confirmed=ConfirmedMA) ->
+    cov2
+  
+  cov2 %>%
+    select(DeathDate=Date, State, Deceased) %>%
+    inner_join(
+      cov2 %>%
+        select(ConfirmDate=Date, State, Confirmed) %>%
+        crossing(Delay=1:100) %>%
+        mutate(DeathDate=ConfirmDate+Delay), 
+      by = c("DeathDate", "State")
+    ) %>%
+    filter(DeathDate > ConfirmDate) %>%
+    arrange(State, desc(DeathDate), desc(ConfirmDate)) %>%
+    mutate(
+      Lambda=1/avgDays,
+      Adjusted=Confirmed * Lambda * (1-Lambda)^(Delay-1)
+    ) %>%
+    filter(Deceased > 0) %>%
+    group_by(State, DeathDate, Deceased) %>%
+    summarise(Adjusted=sum(Adjusted)) %>%
+    ungroup() %>%
+    lm(Deceased~Adjusted-1, data=.) %>%
+    summary() %>%
+    broom::tidy() %>%
+    select(estimate) %>%
+    first() %>%
+    return()
+}
+
+sapply(1:60, function(x) deathRate(covid, x))
+```
+
+```{r}
+states <- setdiff(names(covid) , c("Date", "Status"))
+
+states <- states[colSums(covid[covid$Status=='Deceased',states]) > 50]
+
+stateDeath <- tibble()
+
+for(state in states)
+  for(avgDays in seq(10,60,10)) 
+    stateDeath %>%
+  bind_rows(
+    tibble(
+      State=state,
+      AvgDays=avgDays,
+      DeathRate=deathRate(covid[,c('Date', 'Status', state)], avgDays)
+    )
+  ) ->
+  stateDeath
+
+
+
+```
+
+```{r}
+stateDeath %>%
+  group_by(State) %>%
+  mutate(
+    Lower=scales::percent(min(DeathRate),.1),
+    Upper=scales::percent(max(DeathRate),.1),
+    Range=paste(Lower, Upper, sep='-'),
+    LowerVal=min(DeathRate),
+    Label=paste(State, Range)
+  ) %>%
+  ggplot(aes(x=AvgDays, y=DeathRate)) + geom_point() + geom_line() + facet_wrap(~reorder(Label, -LowerVal)) + ggtitle("Case Fatality Rate estimates by state", subtitle = "This is sensitive to our assumption of average days to death given infection") + theme_bw() + scale_y_continuous("Case Fatality Rate", labels=scales::percent) + scale_x_continuous("Average days to death after infection\nThis is an assumption") + theme(title=element_text(face='bold', size=12), strip.text = element_text(face='bold', hjust=0, size=10))
+```
+
+```{r}
+stateDeath %>%
+  filter(AvgDays==20) %>%
+  ungroup() %>%
+  mutate(
+    Inside=DeathRate >= max(DeathRate)/2,
+    India=State=='TT'
+  ) %>%
+  ggplot(aes(x=reorder(State, DeathRate), y=DeathRate, fill=India, label=scales::percent(DeathRate, 0.1))) + geom_col() + geom_text(aes(col=India,hjust=ifelse(Inside, 1, 0)), fontface='bold', size=3) + scale_colour_manual(values=c("black", "white")) + coord_flip() + labs(title="Case Fatality Rate estimates by state", subtitle = "Assuming death occurs 20 days after infection, on average", caption="© Karthik Shashidhar (@karthiks)\n Data source: covid19india.org") + theme_minimal() + scale_y_continuous("Case Fatality Rate", labels=scales::percent) +xlab('') + theme(legend.position='none', title=element_text(face='bold', size=12), text = element_text(face='bold', size=10)) + scale_fill_manual(values=c("darkgrey", "darkred"))
+```
+
+```{r}
+rd3 %>%
+  select(State=`State code`, Num=`Num Cases`) %>%
+  group_by(State) %>%
+  summarise(Num=sum(Num)) %>%
+  inner_join(
+    stateDeath %>%
+      filter(AvgDays==20) %>%
+      select(State, DeathRate) %>%
+      mutate(Multiple=DeathRate/DeathRate[State=='AP']),
+    by='State'
+  ) %>%
+  mutate(TrueNum=Num*pmax(Multiple, 1)) %>%
+  arrange(-TrueNum) %>%
+  select(State, TrueNum, Num) %>%
+  gather(Type, Num, -State) %>%
+  ggplot(aes(x=reorder(State, Num), y=Num, label=scales::label_number_si()(Num), fill=reorder(Type, desc(Type)))) + geom_bar(position='dodge', stat='identity') +  coord_flip() + geom_text(aes(hjust=ifelse(Num<max(Num)/2, 0, 1), col=Num < max(Num)/2,), position=position_dodge(width=0.9), fontface='bold', size=3) + scale_fill_brewer(palette='Set1') + scale_colour_manual(values=c('white', 'black'))  + theme_minimal() +  theme(legend.position='none', text=element_text(face='bold'), title=element_text(face='bold')) + xlab('State') + scale_y_continuous('Number of cases', breaks=c()) + ggtitle('"Actual" (blue) and "True" (red) number of cases by state', subtitle='True number of cases calculated based on case fatality rate by state')
+  
+```
+

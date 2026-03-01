@@ -1,0 +1,21 @@
+# Data files
+*.RData
+*.rda
+*.csv
+*.xlsx
+*.xls
+*.json
+*.dat
+*.sav
+*.dta
+*.zip
+
+# Shapefiles (already in repo, but don't add new ones)
+
+# R
+.Rhistory
+.Rproj.user
+.RData
+
+# OS
+.DS_Store

@@ -1,0 +1,1145 @@
+---
+title: "Covid Tracker"
+output: html_notebook
+---
+
+
+```{r}
+setwd('~/Documents/work/data work/')
+require(tidyverse)
+```
+
+```{r}
+jsonlite::fromJSON('https://api.covid19india.org/raw_data.json', simplifyVector = T)  %>% 
+  .[[1]] %>%
+  as_tibble() %>%
+  mutate(Date=as.Date(dateannounced, '%d/%m/%Y')) ->
+  covidindia
+```
+
+```{r}
+covidindia %>%
+  filter(!is.na(Date)) %>%
+  count()
+```
+
+
+```{r}
+covidindia %>%
+  count(Date) %>%
+  arrange(Date) %>%
+  mutate(Cumul=cumsum(n)) %>%
+  filter(Cumul > 20) %>%
+  ggplot(aes(x=Date, y=Cumul)) + geom_point() + geom_line() + scale_y_log10("Total cases (log scale)") + geom_text(aes(label=Cumul), nudge_y=0.1, size=3, fontface='bold') + xlab("") + ggtitle("Cumulative Growth in number of Covid-19 positive cases in India", subtitle="Logarithmic Y-axis to illustrate exponential growth") + theme_minimal()
+
+```
+
+Show it instead in terms of doublign time
+
+Smooth better using a 3-day CDGR
+```{r}
+covidindia %>%
+  count(Date) %>%
+  filter(!is.na(Date)) %>%
+  arrange(Date) %>%
+  mutate(Cumul=cumsum(n)) %>%
+  filter(Cumul >= 30) %>%
+  mutate(
+    Growth3=log(Cumul/lag(Cumul,3)),
+    DoublingTime3=log(2)/Growth3*3
+  ) %>%
+  filter(!is.na(DoublingTime3)  & Date < Sys.Date()) %>%
+  ggplot(aes(x=Date, y=DoublingTime3)) + geom_point() + geom_line()  + scale_y_continuous("Doubling Time (number of days)", breaks=c()) + theme_minimal() + geom_text(aes(label=round(DoublingTime3,1)), nudge_y=0.2, fontface='bold', size=3) + labs(title="Covid Cases In India: Days to Double", subtitle = "Calculated using 3-day lagging compounded daily growth rate", caption="© Karthik Shashidhar (@karthiks)") + scale_x_date('',date_breaks = '2 days', date_labels = '%d-%m') + theme(panel.grid.minor = element_blank(), axis.text = element_text(face='bold'))
+```
+
+Let's plot the growth rate as well
+```{r}
+covidindia %>%
+  count(Date) %>%
+  filter(!is.na(Date)) %>%
+  arrange(Date) %>%
+  mutate(Cumul=cumsum(n)) %>%
+  filter(Cumul >= 30) %>%
+  mutate(
+    Growth1=log(Cumul/lag(Cumul,1)),
+    Days=log(2)/Growth1
+  ) %>%
+  filter(!is.na(Growth1) ) %>%
+  ggplot(aes(x=Date, y=Growth1)) + geom_point() + geom_line()  + scale_y_continuous("Daily Growth Rate (%)", breaks=c()) + theme_minimal() + geom_text(aes(label=scales::percent(Growth1, .1)), nudge_y=0.002, fontface='bold', size=3) + ggtitle("Covid Cases In India: Growth Rate") + scale_x_date('',date_breaks = '1 day', date_labels = '%d/%m') + theme(panel.grid.minor = element_blank())
+```
+
+```{r}
+covidindia %>%
+  count(Date) %>%
+  filter(!is.na(Date)) %>%
+  arrange(Date) %>%
+  mutate(Cumul=cumsum(n)) %>%
+  filter(Cumul >= 30) %>%
+  mutate(
+    Growth1=log(Cumul/lag(Cumul,1)),
+    Days=log(2)/Growth1
+  ) %>%
+  filter(!is.na(Growth1)  & Date < Sys.Date()) %>%
+  ggplot(aes(x=Date, y=Days)) + geom_point() + geom_line()  + scale_y_continuous("Daily Growth Rate (%)", breaks=c()) + theme_minimal() + geom_text(aes(label=round(Days, .1)), nudge_y=0.002, fontface='bold', size=3) + ggtitle("Covid Cases In India: Growth Rate", subtitle = "Calculated using 3-day lagging compounded daily growth rate") + scale_x_date('',date_breaks = '1 day', date_labels = '%d/%m') + theme(panel.grid.minor = element_blank())
+```
+
+```{r}
+covidindia %>%
+  filter(!is.na(Date)) %>%
+  rename(State=detectedstate) %>%
+  count(Date, State) %>%
+  complete(Date, State, fill=list(n=0)) %>%
+  group_by(State) %>%
+  arrange(Date) %>%
+  mutate(Cumul=cumsum(n),Total=sum(n)) %>%
+  filter(Cumul >= 5 & Total >= 50) %>%  # ignore small states or states without much data
+  mutate(
+    Growth3=log(Cumul/lag(Cumul,3)),
+    DoublingTime3=log(2)/Growth3*3,
+    LastGrowth=Growth3[Date==max(Date)],
+    LastDouble=DoublingTime3[Date==max(Date)]
+  ) %>%
+  filter(!is.na(DoublingTime3) & Date >= as.Date('2020-03-26')) %>%
+  mutate(StateCase=paste(State, paste(Total, 'total cases'), paste("Now doubling every", round(LastDouble, 1), "days"),  sep='\n')) %>%
+  ggplot(aes(x=Date, y=DoublingTime3)) + geom_point() + geom_line()  + scale_y_continuous("Doubling Time (number of days)", breaks=c()) + theme_minimal() + geom_text(aes(label=round(DoublingTime3,1), y=1.1*DoublingTime3), fontface='bold', size=3) + labs(title="Covid Cases In India: Days to Double", subtitle = "Calculated using 3-day lagging compounded daily growth rate", caption="© Karthik Shashidhar (@karthiks)" ) + scale_x_date('') + facet_wrap(~reorder(StateCase, LastGrowth), scales='free') + theme(strip.text = element_text(face='bold', hjust=0), panel.grid.minor = element_blank(), axis.text = element_text(face='bold'))
+```
+
+Let's do this by district
+```{r}
+covidindia %>%
+  filter(!is.na(Date)) %>%
+  mutate(State=paste0(detecteddistrict, ' (', detectedstate, ')')) %>%
+  count(Date, State) %>%
+  complete(Date, State, fill=list(n=0)) %>%
+  group_by(State) %>%
+  arrange(Date) %>%
+  mutate(Cumul=cumsum(n),Total=sum(n)) %>%
+  filter(Cumul >= 5 & Total >= 50) %>%  # ignore small states or states without much data
+  mutate(
+    Growth3=log(Cumul/lag(Cumul,3)),
+    DoublingTime3=log(2)/Growth3*3,
+    LastGrowth=Growth3[Date==max(Date)],
+    LastDouble=DoublingTime3[Date==max(Date)]
+  ) %>%
+  filter(!is.na(DoublingTime3) & Date==max(Date) & DoublingTime3 < 50) %>%
+  mutate(StateCase=paste0(State, ' (',Total, ')'))%>%
+  ggplot(aes(x=reorder(StateCase, LastDouble), y=LastDouble, fill=log(Total), label=round(LastDouble, 1))) + geom_col() + geom_text(size=2.3, aes(y=ifelse(LastDouble < 6, LastDouble + 1, LastDouble - 1), col=ifelse(LastDouble < 6, 'black', 'white')), fontface='bold') + scale_y_continuous("Days to double", breaks=c()) + theme_minimal() + labs(title="Covid Cases By District In India: Days to Double", subtitle = "Calculated using 3-day lagging compounded daily growth rate", caption="© Karthik Shashidhar (@karthiks)\n Data source: covid19india.org" ) + xlab('') + coord_flip() + theme(panel.grid.minor = element_blank(), axis.text = element_text(face='bold'), legend.position = 'none') + scale_fill_gradient() + scale_colour_identity() + geom_hline(yintercept = 14, col='red', lwd=0.5)
+```
+
+```{r}
+covidindia %>%
+  filter(!is.na(Date)) %>%
+  mutate(State=paste0(detecteddistrict, ' (', detectedstate, ')')) %>%
+  count(Date, State) %>%
+  complete(Date, State, fill=list(n=0)) %>%
+  group_by(State) %>%
+  arrange(Date) %>%
+  mutate(Cumul=cumsum(n),Total=sum(n)) %>%
+  filter(Cumul >= 5 & Total >= 100) %>%  # ignore small states or states without much data
+  mutate(
+    Growth3=log(Cumul/lag(Cumul,3)),
+    DoublingTime3=log(2)/Growth3*3,
+    LastGrowth=Growth3[Date==max(Date)],
+    LastDouble=DoublingTime3[Date==max(Date)]
+  ) %>%
+  filter(!is.na(DoublingTime3) & Date >= Sys.Date() - 10) %>%
+  mutate(StateCase=paste(State, paste(Total, 'total cases'), paste("Now doubling every", round(LastDouble, 1), "days"),  sep='\n')) %>%
+  ggplot(aes(x=Date, y=DoublingTime3)) + geom_point() + geom_line()  + scale_y_continuous("Doubling Time (number of days)", breaks=c()) + theme_minimal() + geom_text(aes(label=round(DoublingTime3,1), y=1.1*DoublingTime3), fontface='bold', size=3) + labs(title="Covid Cases In India: Days to Double", subtitle = "Calculated using 3-day lagging compounded daily growth rate", caption="© Karthik Shashidhar (@karthiks)" ) + scale_x_date('') + facet_wrap(~reorder(StateCase, LastGrowth), scales='free') + theme(strip.text = element_text(face='bold', hjust=0), panel.grid.minor = element_blank(), axis.text = element_text(face='bold'))
+```
+
+```{r}
+covidindia %>%
+  filter(!is.na(Date) & detecteddistrict=='Mumbai') %>%
+  mutate(State=paste0(detecteddistrict, ' (', detectedstate, ')')) %>%
+  count(Date, State) %>%
+  complete(Date, State, fill=list(n=0)) %>%
+  group_by(State) %>%
+  arrange(Date) %>%
+  mutate(Cumul=cumsum(n),Total=sum(n)) %>%
+  mutate(
+    Growth3=log(Cumul/lag(Cumul,3)),
+    DoublingTime3=log(2)/Growth3*3,
+    LastGrowth=Growth3[Date==max(Date)],
+    LastDouble=DoublingTime3[Date==max(Date)]
+  ) %>%
+  filter(!is.na(DoublingTime3) & Date >= Sys.Date() - 20) %>%
+  mutate(StateCase=paste(State, paste(Total, 'total cases'), paste("Now doubling every", round(LastDouble, 1), "days"),  sep='\n')) %>%
+  ggplot(aes(x=Date, y=DoublingTime3)) + geom_point() + geom_line()  + scale_y_continuous("Doubling Time (number of days)", breaks=c()) + theme_minimal() + geom_text(aes(label=round(DoublingTime3,1), y=1.1*DoublingTime3), fontface='bold', size=3) + labs(title="Covid Cases In India: Days to Double", subtitle = "Calculated using 3-day lagging compounded daily growth rate", caption="© Karthik Shashidhar (@karthiks)" ) + scale_x_date('') + facet_wrap(~reorder(StateCase, LastGrowth), scales='free') + theme(strip.text = element_text(face='bold', hjust=0), panel.grid.minor = element_blank(), axis.text = element_text(face='bold'))
+```
+
+Do the bar graph only for Karnataka
+```{r}
+covidindia %>%
+  filter(!is.na(Date) & detectedstate=='Karnataka') %>%
+  mutate(State=detecteddistrict) %>%
+  count(Date, State) %>%
+  complete(Date, State, fill=list(n=0)) %>%
+  group_by(State) %>%
+  arrange(Date) %>%
+  mutate(Cumul=cumsum(n),Total=sum(n)) %>%
+  filter(Cumul >= 3 & Total >= 3) %>%  # ignore small states or states without much data
+  mutate(
+    Growth3=log(Cumul/lag(Cumul,3)),
+    DoublingTime3=log(2)/Growth3*3,
+    LastGrowth=Growth3[Date==max(Date)],
+    LastDouble=DoublingTime3[Date==max(Date)]
+  ) %>%
+  filter(!is.na(DoublingTime3) & Date==max(Date)) %>%
+  mutate(StateCase=paste0(State, ' (',Total, ')'))%>%
+  ggplot(aes(x=reorder(StateCase, LastDouble), y=LastDouble, fill=log(Total), label=round(LastDouble, 1))) + geom_col() + geom_text(size=2.3, aes(y=ifelse(LastDouble < 6, LastDouble + 2, LastDouble - 2), col=ifelse(LastDouble < 6, 'black', 'white')), fontface='bold') + scale_y_continuous("Days to double", breaks=c()) + theme_minimal() + labs(title="Covid Cases By District In India: Days to Double", subtitle = "Calculated using 3-day lagging compounded daily growth rate", caption="© Karthik Shashidhar (@karthiks)\n Data source: covid19india.org" ) + xlab('') + coord_flip() + theme(panel.grid.minor = element_blank(), axis.text = element_text(face='bold'), legend.position = 'none') + scale_fill_gradient() + scale_colour_identity() + geom_hline(yintercept = 14, col='red', lwd=0.5)
+```
+
+```{r}
+covidindia %>%
+  filter(!is.na(Date) & detectedstate %in% c('Uttar Pradesh',"Bihar", "Tamil Nadu", "Gujarat", "Rajasthan", "Madhya Pradesh")) %>%
+  mutate(District=detecteddistrict, State=detectedstate) %>%
+  count(Date, State, District) %>%
+  group_by(State) %>%
+  complete(Date, District, fill=list(n=0)) %>%
+  group_by(State, District) %>%
+  arrange(Date) %>%
+  mutate(Cumul=cumsum(n),Total=sum(n)) %>%
+  filter(Cumul >= 3 & Total >= 10) %>%  # ignore small states or states without much data
+  mutate(
+    Growth3=log(Cumul/lag(Cumul,3)),
+    DoublingTime3=log(2)/Growth3*3,
+    LastGrowth=Growth3[Date==max(Date)],
+    LastDouble=DoublingTime3[Date==max(Date)]
+  ) %>%
+  filter(!is.na(DoublingTime3) & Date==max(Date) & DoublingTime3 <= 50) %>%
+  mutate(StateCase=paste0(District, ' (',Total, ')'))%>%
+  ggplot(aes(x=reorder(StateCase, LastDouble), y=LastDouble, fill=log(Total), label=round(LastDouble, 1))) + geom_col() + geom_text(size=2.3, aes(y=ifelse(LastDouble < 6, LastDouble + 2, LastDouble - 2), col=ifelse(LastDouble < 6, 'black', 'white')), fontface='bold') + scale_y_continuous("Days to double", breaks=c()) + theme_minimal() + labs(title="Covid Cases By District In India: Days to Double", subtitle = "Calculated using 3-day lagging compounded daily growth rate", caption="© Karthik Shashidhar (@karthiks)\n Data source: covid19india.org" ) + xlab('') + coord_flip() + theme(panel.grid.minor = element_blank(), axis.text = element_text(face='bold'), legend.position = 'none') + scale_fill_gradient() + scale_colour_identity() + facet_wrap(~State, scales='free') + geom_hline(yintercept = 14, col='red', lwd=0.5)
+```
+
+
+
+
+
+Only for Karnataka
+```{r}
+covidindia %>%
+  filter(!is.na(Date)) %>%
+  rename(State=detectedstate) %>%
+  filter(State=="Karnataka") %>%
+  count(Date, State) %>%
+  complete(Date, State, fill=list(n=0)) %>%
+  group_by(State) %>%
+  arrange(Date) %>%
+  mutate(Cumul=cumsum(n),Total=sum(n)) %>%
+  filter(Cumul >= 5 & Total >= 50) %>%  # ignore small states or states without much data
+  mutate(
+    Growth3=log(Cumul/lag(Cumul,3)),
+    DoublingTime3=log(2)/Growth3*3,
+    LastGrowth=Growth3[Date==max(Date)]
+  ) %>%
+  filter(!is.na(DoublingTime3) ) %>%
+  mutate(StateCase=paste(State, paste(Total, 'total cases'), sep='\n')) %>%
+  ggplot(aes(x=Date, y=DoublingTime3)) + geom_point() + geom_line()  + scale_y_continuous("Doubling Time (number of days)", breaks=c()) + theme_minimal() + geom_text(aes(label=round(DoublingTime3,1), y=1.1*DoublingTime3), fontface='bold', size=3) + ggtitle("Covid Cases In India: Days to Double", subtitle = "Calculated using 3-day lagging compounded daily growth rate") + scale_x_date('') + facet_wrap(~reorder(StateCase, LastGrowth), scales='free') + theme(strip.text = element_text(face='bold', hjust=0), panel.grid.minor = element_blank(), axis.text = element_text(face='bold'))
+```
+
+State wise absolute
+```{r}
+covidindia %>%
+  rename(State=detectedstate) %>%
+  count(Date, State) %>%
+  filter(!is.na(Date)) %>%
+  group_by(State) %>%
+  arrange(Date) %>%
+  mutate(Cumul=cumsum(n),Total=sum(n)) %>%
+  filter(Cumul >= 5 & Total >= 100) %>% # ignore small states or states without much data
+  ggplot(aes(x=Date, y=Cumul)) + geom_point() + geom_line() + scale_y_log10("Number of cases") + theme_minimal() + facet_wrap(~reorder(State, -Total), scales='free') + ggtitle("Covid Cases In India: Growth by state") + scale_x_date('')  + theme(strip.text = element_text(face='bold', hjust=0)) 
+```
+
+Let's predict what the number of cases will be 2 weeks from now based on one-week growth rate
+
+```{r}
+covidindia %>%
+  rename(State=detectedstate) %>%
+  filter(!is.na(Date) & Date < Sys.Date()) %>%
+  count(Date, State) %>%
+  complete(Date, State, fill=list(n=0)) %>%
+  filter(!is.na(Date)) %>%
+  group_by(State) %>%
+  arrange(Date) %>%
+  mutate(
+    Cumul=cumsum(n),
+    Today=sum(n),
+    Lag7=Cumul[Date==(max(Date)-7)],
+    Growth7=log(Today/Lag7)/7,
+    Lag3=Cumul[Date==(max(Date)-3)],
+    Growth3=log(Today/Lag3)/3,
+    Lag2=Cumul[Date==(max(Date)-2)],
+    Growth2=log(Today/Lag2)/2,
+    GrowthRate=pmax(Growth7, Growth3, Growth2),
+    Forecast2weeks=Today*exp(14*GrowthRate)  - Today,  # People infected until today would have bee cured in 2 weeks' time,
+    Colour=ifelse(GrowthRate <= log(2)/30, 'yellow', ifelse(GrowthRate <= log(2)/7, 'orange', 'red'))
+  ) %>%
+  ungroup() %>%
+  mutate(StateLabel=paste(State, paste(signif(round(Forecast2weeks),3), 'active cases on', format(Sys.Date()+14, '%d-%b')), sep='\n')) %>%
+  filter(Cumul >= 5 & Today >= 50) ->  # ignore small states or states without much data
+  stateCumul
+stateCumul %>%
+  ggplot(aes(x=Date, y=Cumul, col=Colour)) + geom_point() + geom_line() + scale_y_log10("Number of cases") + theme_minimal() + geom_text(aes(label=n, y=1.5*Cumul), fontface='bold', size=2) + facet_wrap(~reorder(StateLabel, -Forecast2weeks), scales='free') + labs(title="Covid Cases In India: Growth by state", subtitle="14 day projection based on maximum of 2-day, 3-day and 7-day growth rate in cases", caption="© Karthik Shashidhar (@karthiks)") + scale_x_date('')  + theme(strip.text = element_text(face='bold', hjust=0)) + scale_colour_identity()
+```
+
+The above graph was misleading. Let me change it up so that we now have active cases per day, assuming a recovery period of 14 days, and a growth equal to max of 2, 3, 7 day growth
+```{r}
+covidindia %>%
+  rename(State=detectedstate) %>%
+  filter(!is.na(Date) & Date < Sys.Date() & State != '') %>%
+  count(Date, State) %>%
+  complete(Date, State, fill=list(n=0)) %>%
+  filter(!is.na(Date)) %>%
+  group_by(State) %>%
+  arrange(Date) %>%
+  mutate(
+    Cumul=cumsum(n),
+    Today=sum(n),
+    Lag7=Cumul[Date==(max(Date)-7)],
+    Growth7=log(Today/Lag7)/7,
+    Lag3=Cumul[Date==(max(Date)-3)],
+    Growth3=log(Today/Lag3)/3,
+    Lag2=Cumul[Date==(max(Date)-2)],
+    Growth2=log(Today/Lag2)/2,
+    GrowthRate=pmax(Growth7, Growth3, Growth2),
+    Colour=ifelse(GrowthRate <= log(2)/30, 'yellow', ifelse(GrowthRate <= log(2)/7, 'orange', 'red'))
+  ) %>%
+  select(Date, State, Cumul, GrowthRate, Colour, Today) %>%
+  inner_join(
+    (.) %>%
+      filter(Date==max(Date)) %>%
+      select(Date, State, Today, GrowthRate) %>%
+      crossing(Projection=0:14) %>%
+      mutate(
+        ProjectedDate=Date + Projection, 
+        ProjectedCases=Today * exp(Projection * GrowthRate),
+        Date=ProjectedDate-14
+      ) %>%
+      select(-GrowthRate, -Today, -Projection),
+    by=c("State", "Date")
+  ) %>%
+  mutate(
+    LiveCases=ProjectedCases-Cumul,
+    StateLabel=paste(State, paste(signif(round(Today*exp(14*GrowthRate)-Today),3), 'active cases on', format(Sys.Date()+14, '%d-%b')), sep='\n')
+    ) %>%
+  filter(Cumul >= 5 & Today >= 50) %>%
+  ggplot(aes(x=ProjectedDate, y=LiveCases, col=Colour)) + geom_point() + geom_line() + scale_y_continuous("Number of cases", labels=scales::label_number_si()) + theme_minimal() + geom_text(aes(label=round(LiveCases), y=1.1*LiveCases), fontface='bold', size=2) + facet_wrap(~reorder(StateLabel, -Today*exp(GrowthRate*14)), scales='free') + labs(title="Covid Cases In India: Growth by state", subtitle="14 day projection based on maximum of 2-day, 3-day and 7-day growth rate in cases\nAssuming a constant 14-day recovery period", caption="© Karthik Shashidhar (@karthiks)") + scale_x_date('')  + theme(strip.text = element_text(face='bold', hjust=0)) + scale_colour_identity()
+  
+
+
+```
+
+Plot on linear scale to see rate of growth properly 
+
+```{r}
+stateCumul %>%
+  ggplot(aes(x=Date, y=Cumul, col=Colour)) + geom_line(lwd=1) + geom_smooth(se=F, col='blue', lwd=0.5, lty=2) + scale_y_continuous("Number of cases") + theme_minimal() +  facet_wrap(~reorder(StateLabel, -Forecast2weeks), scales='free') + labs(title="Covid Cases In India: Growth by state", subtitle="14 day projection based on maximum of 2-day, 3-day and 7-day growth rate in cases", caption="© Karthik Shashidhar (@karthiks)") + scale_x_date('')  + theme(strip.text = element_text(face='bold', hjust=0)) + scale_colour_identity()
+```
+
+
+```{r}
+log(1.5)/7
+```
+
+Same thing by districts of Karnataka
+
+```{r}
+covidindia %>%
+  rename(State=detectedstate, District=detecteddistrict) %>%
+  filter(State=='Karnataka') %>%
+  count(Date, District) %>%
+  complete(Date, District, fill=list(n=0)) %>%
+  filter(!is.na(Date)) %>%
+  group_by(District) %>%
+  arrange(Date) %>%
+  mutate(
+    Cumul=cumsum(n),
+    Today=sum(n),
+    Lag7=Cumul[Date==(Sys.Date()-7)],
+    Growth7=ifelse(Lag7 > 0, log(Today/Lag7)/7, 0),
+    Lag3=Cumul[Date==(Sys.Date()-3)],
+    Growth3=ifelse(Lag3 > 0, log(Today/Lag3)/3, 0),
+    Lag2=Cumul[Date==(Sys.Date()-2)],
+    Growth2=ifelse(Lag2 > 0, log(Today/Lag2)/2, 0),
+    GrowthRate=pmax(Growth7, Growth3, Growth2),
+    Forecast2weeks=Today*exp(14*GrowthRate) - Today  # People infected until today would have bee cured in 2 weeks' time
+  ) %>%
+  ungroup() %>%
+  mutate(District=paste(District, paste(signif(Forecast2weeks,3), 'cases by', format(Sys.Date()+14, '%d-%b')), sep='\n')) %>%
+  filter(Today >= 7 & Cumul > 0) %>%
+  ggplot(aes(x=Date, y=Cumul)) + geom_point() + geom_line() + scale_y_log10("Number of cases", lim=c(1, NA)) + theme_minimal() + geom_text(aes(label=n, y=1.2*Cumul), fontface='bold', size=3) + facet_wrap(~reorder(District, -Forecast2weeks), scales='free') + ggtitle("Covid Cases In India: Growth by state", subtitle="14 day forecast based on maximum of 3-day and 7-day growth rate in cases") + scale_x_date('')  + theme(strip.text = element_text(face='bold', hjust=0)) 
+```
+
+```{r}
+covidindia %>%
+  rename(State=detectedstate, District=detecteddistrict) %>%
+  filter(State=='Karnataka') %>%
+  count(Date, District) %>%
+  complete(Date, District, fill=list(n=0)) %>%
+  filter(!is.na(Date)) %>%
+  group_by(District) %>%
+  arrange(Date) %>%
+  mutate(
+    Cumul=cumsum(n),
+    Today=sum(n),
+    Lag7=Cumul[Date==(Sys.Date()-7)],
+    Growth7=ifelse(Lag7 > 0, log(Today/Lag7)/7, 0),
+    Lag3=Cumul[Date==(Sys.Date()-3)],
+    Growth3=ifelse(Lag3 > 0, log(Today/Lag3)/3, 0),
+    Lag2=Cumul[Date==(Sys.Date()-2)],
+    Growth2=ifelse(Lag2 > 0, log(Today/Lag2)/2, 0),
+    GrowthRate=pmax(Growth7, Growth3, Growth2),
+    Forecast2weeks=Today*exp(14*GrowthRate) # People infected until today would have bee cured in 2 weeks' time
+  ) %>%
+  ungroup() %>%
+  mutate(District=paste(District, paste(signif(Forecast2weeks,3), 'total cases by', format(Sys.Date()+14, '%d-%b')), sep='\n')) %>%
+  filter(Today >= 7 & Cumul > 0) %>%
+  ggplot(aes(x=Date, y=Cumul)) + geom_point() + geom_line() + scale_y_log10("Number of cases", lim=c(1, NA)) + theme_minimal() + geom_text(aes(label=n, y=1.2*Cumul), fontface='bold', size=3) + facet_wrap(~reorder(District, -Forecast2weeks), scales='free') + ggtitle("Covid Cases In Karnataka: Growth by district", subtitle="14 day forecast based on maximum of 2-day, 3-day and 7-day growth rate in cases") + scale_x_date('')  + theme(strip.text = element_text(face='bold', hjust=0)) 
+```
+
+
+
+```{r}
+covidindia %>%
+  mutate(TJ=contractedfromwhichpatientsuspected=='E0') %>%
+  count(typeoftransmission, TJ,  sort=T) %>%
+  spread(TJ,n)
+``` 
+
+```{r}
+covidindia %>%
+  filter(str_detect(contractedfromwhichpatientsuspected, 'E0')) %>%
+  count(notes, sort=T) %>%
+  mutate(notes=str_sub(notes, 1,80)) %>%
+  mutate(Cumul=cumsum(n))
+```
+
+```{r}
+covidindia %>%
+  filter(str_detect(contractedfromwhichpatientsuspected, 'E0')) %>%
+  count(Date) %>%
+  ggplot(aes(x=Date, y=n,col="Per Day")) + geom_point() + geom_line() + ggtitle("Cases of Delhi-related people discovered each day", subtitle='Where "Delhi" appears in notes') + geom_point(aes(y=cumsum(n), col="Cumulative")) + geom_line(aes(y=cumsum(n), col='Cumulative')) + theme_minimal() + scale_color_brewer(palette="Set1") + theme(legend.title = element_blank(), legend.position = 'top') + geom_text(aes(label=n, y=1.1*n)) + geom_text(aes(label=cumsum(n), y=1.05*cumsum(n), col='Cumulative')) + scale_x_date('', date_breaks='2 days',date_labels = '%d/%m')
+```
+
+```{r}
+covidindia %>%
+  filter(contractedfromwhichpatientsuspected=='E0') %>%
+  count(detectedstate, detecteddistrict, sort=T)
+
+```
+
+```{r}
+covidindia %>%
+  filter(contractedfromwhichpatientsuspected=='E0') %>%
+  filter(Date >= as.Date('2020-03-28')) %>%
+  count(detectedstate, Date) %>%
+  inner_join(
+    (.) %>%
+      group_by(detectedstate)%>%
+      filter(length(unique(Date)) > 1) %>%
+      summarise(total=sum(n)) %>%
+      arrange(-total) %>%
+      head(12),
+    by='detectedstate'
+  ) %>%
+  group_by(detectedstate) %>%
+  arrange(Date) %>%
+  mutate(Cumul=cumsum(n)) %>%
+  ungroup() %>%
+  ggplot(aes(x=Date, y=Cumul, label=Cumul)) + geom_line() + geom_point() + geom_text(nudge_y=5) + facet_wrap(~reorder(detectedstate, -total), scales='fixed') + theme_minimal()
+
+```
+
+```{r}
+covidindia %>%
+  filter(str_detect(detecteddistrict, 'Indore'))
+```
+
+```{r}
+covidindia %>%
+  filter(detectedstate=='Karnataka') %>%
+  select(Date, StateID=statepatientnumber, City=detectedcity, District=detecteddistrict,Status=currentstatus, Notes=notes, Age=agebracket, Sex=gender, Transmission=typeoftransmission, MoreNotes=backupnotes) %>%
+  mutate(Notes=str_sub(Notes, 1, 60)) %>%
+  arrange(desc(Date), District, desc(StateID))
+```
+
+```{r}
+covidindia %>%
+  filter(detectedstate=='Karnataka') %>%
+  count(notes, sort=T)
+```
+
+```{r}
+scales::percent(1e6/1.33e9, 0.0001)
+
+1e6/1.33e9 * 10000
+
+0.02 * 19985
+
+11/411
+
+0.02 * 19850
+
+105/(105+397)
+
+scales::percent(as.numeric(prop.test(100, 100000)$conf.int))
+```
+
+```{r}
+covidindia %>%
+  filter(detectedstate=='Karnataka') %>%
+  count(Date)
+```
+
+```{r}
+covidindia %>%
+  filter(contractedfromwhichpatientsuspected=='E0' & gender=='F') %>%
+  count(detectedstate)
+```
+
+Bangalore only 
+
+```{r}
+covidindia %>%
+  filter(detecteddistrict=='Bengaluru') %>%
+  select(Date, StateID=statepatientnumber, City=detectedcity, District=detecteddistrict,Status=currentstatus, Notes=notes, agebracket, gender, Transmission=typeoftransmission, MoreNotes=backupnotes, Contact=contractedfromwhichpatientsuspected) %>%
+  mutate(Notes=str_sub(Notes, 1, 60)) %>%
+  arrange(desc(Date), desc(StateID))
+```
+
+```{r}
+covidindia %>%
+  mutate(detectedcity=str_trim(detectedcity)) %>%
+  filter(detectedstate=='Karnataka') %>%
+  count(detectedcity, sort=T)
+
+covidindia %>%
+  mutate(detecteddistrict=str_trim(detecteddistrict)) %>%
+  filter(detectedstate=='Karnataka') %>%
+  count(detecteddistrict, sort=T)
+
+
+```
+
+
+
+Let's check for Benford's Law
+```{r}
+covidindia %>%
+  count(Date) %>%
+  mutate(
+    Total=cumsum(n),
+    Lead=as.numeric(str_sub(as.character(Total), 1,1))
+  ) %>%
+  count(Lead) %>%
+  mutate(
+    Theoretical=sum(n) * log10(1 + 1/Lead)
+  ) %>%
+  ggplot(aes(x=Lead, y=n, col='Actual')) + geom_point(size=2) + geom_point(aes(y=Theoretical, col='Theoretical'),size=2) + scale_color_brewer(palette='Set1') + theme_minimal() + scale_x_continuous("Leading Digit", breaks=1:9) + scale_y_continuous("Number of instances") + theme(legend.position = 'bottom', legend.title = element_blank())
+```
+
+Let's do the same thing by state
+```{r}
+covidindia %>%
+  rename(State=detectedstate) %>%
+  count(Date, State) %>%
+  filter(!is.na(Date)) %>%
+  group_by(State) %>%
+  arrange(Date) %>%
+  mutate(Cumul=cumsum(n),Total=sum(n)) %>%
+  filter(Total >= 100) %>% 
+  mutate(
+    Lead=as.numeric(str_sub(as.character(Cumul), 1,1))
+  ) %>%
+  count(State, Lead, Total) %>%
+  group_by(State) %>%
+  mutate(
+    Theoretical=sum(n) * log10(1 + 1/Lead)
+  ) %>%
+  ggplot(aes(x=Lead, y=n, col='Actual')) + geom_point(size=2) + geom_point(aes(y=Theoretical, col='Theoretical'),size=2) + scale_color_brewer(palette='Set1') + theme_minimal() + scale_x_continuous("Leading Digit", breaks=1:9) + scale_y_continuous("Number of instances") + theme(legend.position = 'bottom', legend.title = element_blank()) + facet_wrap(~reorder(State, -Total))
+
+```
+
+Let's just look at the Karnataka districts
+
+```{r}
+covidindia %>%
+  filter(!is.na(Date)) %>%
+  rename(State=detectedstate, District=detecteddistrict) %>%
+  filter(State=="Karnataka") %>%
+  count(District, Date) %>%
+  complete(District, Date, fill = list(n=0)) %>%
+  arrange(District, Date) %>%
+  group_by(District) %>%
+  mutate(
+    Total=cumsum(n),
+    Latest=Total[Date==max(Date)],
+    Back1week=Total[Date==(max(Date)-7)],
+    Back3days=Total[Date==(max(Date)-3)],
+    WeekGrowth=Latest/Back1week-1,
+    Growth3=Latest/Back3days-1,
+    colour=ifelse(Latest==Back1week, 'No new cases in last 1 week', ifelse((Back1week==0 & Latest > 0) | WeekGrowth > 1 | Growth3 > 0.7, 'Doubled in 1 week OR 70% growth in last 3 days', 'Low growth in last 1 week'))
+  ) %>%
+  ggplot(aes(x=Date, y=Total, col=colour)) + geom_line(lwd=2) + facet_wrap(~District, scales='free') + theme_minimal() + scale_y_continuous('', breaks= scales::pretty_breaks()) + scale_x_date('') + scale_colour_manual(values = c('red', 'orange', 'yellow')) + theme(strip.text = element_text(face='bold', hjust=0), legend.position = 'top', legend.title = element_blank(), legend.text = element_text(face='bold'), axis.text = element_text(face='bold')) + labs(title="Growth of Covid-19 cases by district in Karnataka", caption='© Karthik Shashidhar\n  @karthiks')
+```
+
+```{r}
+covidindia %>%
+  filter(!is.na(Date)) %>%
+  rename(State=detectedstate, District=detecteddistrict) %>%
+  filter(State=="Karnataka") %>%
+  count(District, Date) %>%
+  complete(District, Date, fill = list(n=0)) %>%
+  arrange(District, Date) %>%
+  group_by(District) %>%
+  mutate(
+    Total=cumsum(n),
+    Latest=Total[Date==max(Date)],
+    Back1week=Total[Date==(max(Date)-7)],
+    Back3days=Total[Date==(max(Date)-3)],
+    WeekGrowth=Latest/Back1week-1,
+    Growth3=Latest/Back3days-1,
+    colour=ifelse(Latest==Back1week, 'No new cases in last 1 week', ifelse((Back1week==0 & Latest > 0) | WeekGrowth > 1 | Growth3 > 0.7, 'Doubled in 1 week OR 70% growth in last 3 days', 'Low growth in last 1 week'))
+  ) %>%
+  ggplot(aes(x=Date, y=Total, col=colour)) + geom_line(lwd=2) + facet_wrap(~District, scales='fixed') + theme_minimal() + scale_y_log10('', breaks= scales::pretty_breaks()) + scale_x_date('') + scale_colour_manual(values = c('red', 'orange', 'yellow')) + theme(strip.text = element_text(face='bold', hjust=0), legend.position = 'top', legend.title = element_blank(), legend.text = element_text(face='bold'), axis.text = element_text(face='bold')) + ggtitle("Growth of Covid-19 cases by district in Karnataka")
+```
+Do it on a choropleth
+
+```{r}
+require(sf)
+kar <- st_read('~/Documents/work/data work/maps/maps/Districts/Census_2011/2011_Dist.shp') %>%
+  filter(ST_NM=='Karnataka')
+```
+
+```{r}
+
+
+kar %>%
+  mutate(DISTRICT=as.character(DISTRICT)) %>%
+  left_join(
+    covidindia %>%
+      rename(State=detectedstate, District=detecteddistrict) %>%
+      filter(State=="Karnataka" & !is.na(Date)) %>%
+      count(District, Date) %>%
+      complete(District, Date, fill = list(n=0)) %>%
+      arrange(District, Date) %>%
+      group_by(District) %>%
+      mutate(
+        Total=cumsum(n),
+        Latest=Total[Date==max(Date)],
+        Back1week=Total[Date==(max(Date)-7)],
+        Back3days=Total[Date==(max(Date)-3)],
+        WeekGrowth=Latest/Back1week-1,
+        Growth3=Latest/Back3days-1,
+        colour=ifelse(Latest==Back1week, 'No new cases in last 1 week', ifelse((Back1week==0 & Latest > 0) | WeekGrowth > 1 | Growth3 > 0.7, 'Doubled in 1 week OR 70% growth in last 3 days', 'Low growth in last 1 week'))
+      ) %>%
+      distinct(District, colour) %>%
+      left_join(
+        tibble(
+          District=c('Bagalkote', 'Ballari', 'Belagavi', 'Bengaluru', "Bengaluru Rural", "Kalaburagi", 'Mysuru', 'Tumakuru', 'Vijayapura'),
+          DISTRICT=c('Bagalkot', 'Bellary', 'Belgaum', 'Bangalore', 'Bangalore Rural', 'Gulbarga', 'Mysore', 'Tumkur' , 'Bijapur')
+        ),
+        by='District'
+      ) %>%
+      mutate(DISTRICT=coalesce(DISTRICT, District)) %>%
+      ungroup() %>%
+      distinct(DISTRICT, colour),
+    by='DISTRICT'
+  ) %>%
+  mutate(colour=coalesce(colour, 'Zero cases')) %>%
+  ggplot() + geom_sf(aes(fill=colour), col='black') + geom_text(data=st_coordinates(st_centroid(kar)) %>% as_tibble() %>% mutate(DISTRICT=kar$DISTRICT), aes(x=X, y=Y, label=DISTRICT), fontface='bold', size=3)+  scale_fill_manual(values = c('red', 'orange', 'yellow', 'darkgreen'))+ theme_minimal() + theme(legend.position = 'right', legend.title = element_blank()) + labs(title="Prevalence and growth of covid-19 cases in Karnataka, by District", subtitle = format(Sys.Date(), '%d %B, %Y'), caption="© Karthik Shashidhar (@karthiks)") + xlab('') + ylab('') 
+
+```
+
+```{r}
+read_csv('https://api.covid19india.org/csv/latest/statewise_tested_numbers_data.csv') %>%
+  mutate(
+    Date=as.Date(`Updated On`, '%d/%m/%Y'),
+    Tested=as.numeric(`Total Tested`)
+  ) %>%
+  rename(state=State) ->
+  covidtests
+```
+
+```{r}
+covidtests %>%
+  distinct(state, Date, Tested) %>%
+  filter(!is.na(Tested)) %>%
+  group_by(state) %>%
+  arrange(state, Date) %>%
+  mutate(
+    TestedToday=Tested-lag(Tested, 1),
+    DateDiff=as.numeric(Date-lag(Date, 1), units='days')
+  ) %>%
+  filter(n() > 5 & !is.na(DateDiff) & DateDiff==1) %>%
+  ggplot(aes(x=Date, y=Tested, label=Tested)) + geom_point() + geom_line() + geom_text(aes(y=1.1*Tested), fontface='bold', size=2.5) + theme_minimal() + facet_wrap(~state, scales='free') + xlab('') + scale_y_continuous("Cumulative tested", breaks=c())
+
+```
+
+```{r}
+covidtests %>%
+  distinct(state, Date, Tested) %>%
+  filter(!is.na(Tested)) %>%
+  group_by(state) %>%
+  arrange(state, Date) %>%
+  mutate(
+    TestedToday=Tested-lag(Tested, 1),
+    DateDiff=as.numeric(Date-lag(Date, 1), units='days')
+  ) %>%
+  filter(n() > 5 & !is.na(DateDiff) & DateDiff==1 & state=='Karnataka')
+```
+
+Let's plot testing as well as positive cases
+```{r}
+covidtests %>%
+  distinct(state, Date, Tested) %>%
+  inner_join(
+    covidindia %>%
+      count(Date, state=detectedstate, name = 'Positive') %>%
+      arrange(state, Date) %>%
+      group_by(state) %>%
+      mutate(Positive=cumsum(Positive)),
+    by=c("Date", "state")
+  ) %>%
+  filter(complete.cases(.)) %>%
+  group_by(state) %>%
+  filter(n() > 5) %>%
+  ggplot(aes(x=Tested, y=Positive, label=format(Date, '%d-%m'))) + geom_point() + geom_smooth(method='loess', formula='y~x') + facet_wrap(~state, scales='free') + theme_minimal()  + xlab("Cumulative people tested") + ylab("Cumulative people found positive")
+```
+
+```{r}
+covidindia %>%
+  filter(detectedstate=='Karnataka') %>%
+  arrange(desc(Date))
+```
+
+```{r}
+cv2 <- read_csv('https://api.covid19india.org/csv/latest/raw_data.csv')
+```
+
+```{r}
+```
+
+```{r}
+covidtests %>%
+  distinct(state, Date, Tested) %>%
+  inner_join(
+    covidindia %>%
+      count(Date, state=detectedstate, name = 'Positive') %>%
+      arrange(state, Date) %>%
+      group_by(state) %>%
+      mutate(Positive=cumsum(Positive)),
+    by=c("Date", "state")
+  ) %>%
+  filter(complete.cases(.)) %>%
+  group_by(state) %>%
+  filter(Date >= (max(Date)-6)) %>%
+  filter(n() >= 6) %>%
+  ggplot(aes(x=Tested, y=Positive, label=format(Date, '%d-%m'))) + geom_point() + geom_smooth(method='loess', formula='y~x') + facet_wrap(~state, scales='free') + theme_minimal()  + scale_x_log10("Cumulative people tested") + scale_y_log10("Cumulative people found positive") 
+```
+
+State-wise coloured graph
+
+```{r}
+covidtests %>%
+  distinct(state, Date, Tested) %>%
+  arrange(state, Date) %>%
+  filter(!is.na(Tested)) %>%
+  group_by(state) %>%
+  mutate(
+    NewTests=Tested-lag(Tested, 1)
+  ) %>%
+  filter(!is.na(NewTests) & NewTests > 0) %>%
+  mutate(
+    DateDiff=as.numeric(Date-lag(Date,1))
+  ) %>%
+  filter(DateDiff==1) %>%
+  filter(n() >= 5) %>%
+  inner_join(
+    covidindia %>%
+      count(Date, state=detectedstate, name = 'Positive') %>%
+      arrange(state, Date) %>%
+      group_by(state) %>%
+      mutate(Positive=cumsum(Positive)),
+    by=c("Date", "state")
+  ) %>%
+  ungroup() %>%
+  filter(complete.cases(.)) %>%
+  group_by(state) %>%
+  arrange(state,Date) %>%
+  mutate(
+    TestGrowth=log(Tested/lag(Tested,3))/3, 
+    CaseGrowth=log(Positive/lag(Positive,3))/3, 
+    Slope=CaseGrowth/TestGrowth,
+    LastBig=as.numeric(Sys.Date()-max(Date[!is.na(Slope) & Slope >= 0.5]))
+  ) %>%
+  distinct(state, LastBig) %>%
+  ungroup() %>%
+  mutate(
+    LastBig=ifelse(LastBig==Inf,NA,LastBig),
+    LastBig=coalesce(LastBig, max(LastBig, na.rm=T)),
+    BlueNess=(LastBig-min(LastBig))/(max(LastBig)-min(LastBig)),
+    Colour=rgb(1,0.4+BlueNess*0.6,0.4-BlueNess*0.4)
+  )%>%
+  distinct(state, Colour) ->
+  stateColours
+
+
+covidtests %>%
+  distinct(state, Date, Tested) %>%
+  inner_join(
+    covidindia %>%
+      count(Date, state=detectedstate, name = 'Positive') %>%
+      arrange(state, Date) %>%
+      group_by(state) %>%
+      mutate(Positive=cumsum(Positive)),
+    by=c("Date", "state")
+  ) %>%
+  filter(complete.cases(.)) %>%
+  group_by(state) %>%
+  filter(n() > 5) ->
+  stateTestCases
+
+stateColours %>%
+  filter(state %in% stateTestCases$state) ->
+  stateColours
+
+stateGraphs <- list()
+
+for(i in 1:nrow(stateColours)) {
+  stateTestCases %>%
+    filter(state==stateColours$state[i]) %>%
+    ggplot(aes(x=Tested, y=Positive, label=format(Date, '%d-%m'))) + geom_point() + geom_smooth(method='loess', formula='y~x') + theme_minimal()  + scale_x_continuous("Total tests", labels=scales::label_number_si()) + scale_y_continuous("Total Positive Cases") + ggtitle(stateColours$state[i]) + theme(plot.background = element_rect(fill=stateColours$Colour[i]), title=element_text(face='bold', size=16), text=element_text(face='bold', size=10)) ->
+    stateGraphs[[i]]
+}
+
+require(patchwork)
+stateGraphs %>% wrap_plots(nrow=3, guides = 'collect') ->
+  p
+
+ggsave('tmp.png', p, width=20, height=10, units='in')
+
+
+
+
+
+```
+
+```{r}
+stateTestCases %>%
+  group_by(state) %>%
+  mutate(Label=ifelse(Date==max(Date), state, '')) %>%
+  inner_join(stateColours, by='state') %>%
+  ggplot(aes(x=Tested, y=Positive, group=state, col=Colour, label=Label)) + geom_line(lwd=1) + geom_point() + geom_text(nudge_x=10,fontface='bold', col='black', size=3, hjust=0)+ scale_colour_identity() + theme_minimal() 
+```
+
+```{r}
+stateTestCases %>%
+  group_by(state) %>%
+  mutate(
+    Ratio=Tested/Positive,
+    Label=ifelse(Date==max(Date), round(Ratio), '')
+  ) %>%
+  ggplot(aes(x=Date, y=Ratio, label=Label)) + geom_point() + geom_line() + geom_text(hjust=1, nudge_y=1, fontface='bold', size=2.5) + facet_wrap(~state, scales='free') + theme_minimal() + xlab('') + ylab("Tests per positive case")+ labs(title="Tests per positive case", caption="© Karthik Shashidhar (@karthiks)\n Data source: covid19india.org" ) + theme(title=element_text(face='bold'), text=element_text(face='bold'))
+```
+
+```{r}
+covidtests %>%
+  group_by(Date) %>%
+  summarise(Tests=sum(Tested, na.rm=T)) %>%
+  inner_join(
+    covidindia %>% 
+      count(Date) %>%
+      mutate(Positives=cumsum(n)),
+    by='Date'
+  ) %>%
+  arrange(Date)
+```
+
+```{r}
+520000/23000
+```
+
+```{r}
+stateTestCases %>%
+  group_by(state) %>%
+  mutate(
+    Label=ifelse(Date==max(Date), state, ''),
+    Ratio=Tested/Positive
+  ) %>%
+  inner_join(stateColours, by='state') %>%
+  ggplot(aes(x=Date, y=Ratio, group=state, col=Colour, label=Label)) + geom_line(lwd=1) + geom_point() + geom_text(nudge_x=0.1,fontface='bold', col='black', size=3, hjust=0)+ scale_colour_identity() + theme_minimal() 
+```
+
+```{r}
+p
+```
+
+```{r}
+stateTestCases %>%
+  arrange(state, Date)
+```
+
+
+Now let's try multiple Y axes
+Data is same
+```{r}
+covidtests %>%
+  distinct(state, Date, Tested) %>%
+  inner_join(
+    covidindia %>%
+      count(Date, state=detectedstate, name = 'Positive') %>%
+      arrange(state, Date) %>%
+      group_by(state) %>%
+      mutate(Positive=cumsum(Positive)),
+    by=c("Date", "state")
+  ) %>%
+  filter(complete.cases(.) & Date >= as.Date('2020-04-07')) %>%
+  group_by(state) %>%
+  filter(n() > 5) %>%
+  ggplot(aes(x=Date, y=Tested, col='tested')) + geom_line() + geom_point() + geom_point(aes(y=Positive*20, col='Positive')) + geom_line(aes(y=Positive*20, col='Positive')) + scale_y_continuous("Cumulative Tests (Left Axis)", sec.axis = sec_axis(~./20, name='Cumulative Positive (Right Axis)'), labels=scales::label_number_si()) + facet_wrap(~state, scales='free') + scale_colour_manual(values=c('blue', 'red')) + theme_minimal() + theme(axis.line.y.left = element_line(colour='red'), axis.text.y.left = element_text(colour='red', face='bold'), axis.ticks.y.left = element_line(colour='red'), axis.line.y.right = element_line(colour='blue'), axis.text.y.right = element_text(colour='blue', face='bold'), axis.ticks.y.right = element_line(colour='blue'), axis.title.y.right = element_text(colour='blue', face='bold'), axis.title.y.left=element_text(colour='red', face='bold'), legend.position='none', strip.text = element_text(face='bold', size=12, hjust=0), axis.text.x = element_text(face='bold')) + xlab('')
+```
+
+Visualise doubling time in a map
+```{r}
+require(sf)
+india <- st_read('~/Documents/work/data work/maps/maps/States/Admin2.shp')
+```
+
+
+```{r}
+lapply(india$geometry, st_multipolygon)%>%
+  st_sfc() %>%
+  st_sf() %>%
+  rowid_to_column() %>%
+  st_cast("POLYGON") %>% 
+  mutate(area = st_area(geometry)) %>%
+  group_by(rowid) %>%
+  top_n(1, area) %>%
+  ungroup() %>%
+  mutate(ST_NM=india$ST_NM) %>%
+  transmute(State=as.character(ST_NM), geometry) %>%
+  left_join(
+    tibble(
+      State=c('Andaman & Nicobar Island', 'Jammu & Kashmir', "NCT of Delhi", "Arunanchal Pradesh", "Dadara & Nagar Havelli"),
+      NewState=c('Andaman and Nicobar Islands', 'Jammu and Kashmir', "Delhi", "Arunachal Pradesh", "Dadra and Nagar Haveli")
+    ),
+    by='State'
+  ) %>%
+  mutate(State=coalesce(NewState, State)) %>%
+  select(-NewState) ->
+  ind1
+```
+
+
+```{r}
+ind1 %>%
+  left_join(
+    covidindia %>%
+      filter(!is.na(Date) & Date < Sys.Date()) %>%
+      rename(State=detectedstate) %>%
+      filter(State != '') %>%
+      count(Date, State) %>%
+      complete(Date, State, fill=list(n=0)) %>%
+      group_by(State) %>%
+      arrange(Date) %>%
+      mutate(Cumul=cumsum(n),Total=sum(n)) %>%
+      #filter(Cumul >= 5 & Total >= 10) %>%  # ignore small states or states without much data
+      mutate(
+        Growth3=log(Cumul/lag(Cumul,3)),
+        DoublingTime3=log(2)/Growth3*3,
+        LastGrowth=Growth3[Date==max(Date)]
+      ) %>%
+      filter(!is.na(DoublingTime3) & Date >= as.Date('2020-03-26')) %>%
+      mutate(StateCase=paste(State, paste(Total, 'total cases'), sep='\n')) %>%
+      filter(Date==max(Date) & Total >= 10) %>%
+      filter(DoublingTime3 < 100) %>%
+      select(State, DoublingTime=DoublingTime3) ,
+    by='State'
+  ) 
+
+#%>%
+#  ggplot() + geom_sf(aes(fill=log(DoublingTime)), col='black') + scale_fill_gradient(low = 'red',  high='yellow') + ggtitle(paste("India: Number of days for Covid-19 cases to double,", format(Sys.Date(), '%d %B')), subtitle = "Grey represents fewer than 10 cases overall") + annotate('text', x=70, y=0, label='© Karthik Shashidhar\n @karthiks', size=2, fontface='bold', hjust=0, vjust=0) + xlab('') + ylab('') + theme(legend.position='none')
+```
+
+```{r}
+covidindia %>%
+  count(Date, State=detectedstate, Age=agebracket) %>%
+  mutate(Age=as.numeric(Age)) %>%
+  filter(!is.na(Age) & State != '') %>%
+  complete(State, Age, Date, fill=list(n=0)) %>%
+  arrange(State, Age, Date) %>%
+  group_by(State, Date) %>%
+  mutate(Total=cumsum(n)) %>%
+  group_by(State) %>%
+  mutate(Max=max(Total)) %>%
+  ungroup() %>%
+  filter(Max > 10) %>%
+  group_by(State, Date) %>%
+  summarise(AverageAge=sum(Age*Total)/sum(Total)) %>%
+  filter(!is.na(AverageAge)) %>%
+  ggplot(aes(x=Date, y=AverageAge)) + geom_line() + facet_wrap(~State, scales='free') + geom_smooth()+ theme_minimal()
+```
+
+```{r}
+covidindia %>%
+  filter(!is.na(Date)) %>%
+  rename(State=detectedstate) %>%
+  filter(State != '') %>%
+  count(Date, State) %>%
+  complete(Date, State, fill=list(n=0)) %>%
+  group_by(State) %>%
+  arrange(Date) %>%
+  mutate(Cumul=cumsum(n),Total=sum(n)) %>%
+  #filter(Cumul >= 5 & Total >= 10) %>%  # ignore small states or states without much data
+  mutate(
+    Growth3=log(Cumul/lag(Cumul,3)),
+    DoublingTime3=log(2)/Growth3*3,
+    LastGrowth=Growth3[Date==max(Date)]
+  ) %>%
+  filter(!is.na(DoublingTime3) & Date >= as.Date('2020-03-26')) %>%
+  mutate(StateCase=paste(State, paste(Total, 'total cases'), sep='\n')) %>%
+  filter(Date==max(Date) & Total >= 10) %>%
+  select(State, DoublingTime=DoublingTime3) %>%
+  filter(DoublingTime < 100 )%>%
+  arrange(-DoublingTime)
+```
+
+
+
+
+
+Let's see if we can figure out who all are Delhi-related
+```{r}
+covidindia %>%
+  select(Patient=patientnumber, Contact=contractedfromwhichpatientsuspected, notes) %>%
+  filter(Contact != '') %>%
+  mutate(Contact2=strsplit(Contact, ",")) %>% 
+  unnest(Contact2) %>%
+  mutate(Contact2=parse_number(Contact2), Delhi=str_detect(notes, 'Delhi')) %>%
+  filter(!is.na(Contact)) %>%
+  select(Patient, Contact=Contact2, OrigContact=Contact, Delhi) ->
+  delhi1
+```
+Level 0 is all those with contact as "E0"
+```{r}
+covidindia %>%
+  filter(contractedfromwhichpatientsuspected=='E0') %>%
+  select(Patient=patientnumber) -> 
+  delhi0
+```
+
+```{r}
+covidindia %>%
+  select(Patient=patientnumber, Contact=contractedfromwhichpatientsuspected) %>%
+  filter(Contact != '' & Contact != 'E0') %>%
+  mutate(Contact=strsplit(Contact, ",")) %>% 
+  unnest(Contact) %>%
+  mutate(Contact=parse_number(Contact)) ->
+  patientGraph
+```
+
+```{r}
+patientGraph %>%
+  filter(Contact %in% delhi0$Patient) %>%
+  select(Patient) %>%
+  bind_rows(delhi0) %>%
+  distinct() ->
+  delhi1
+while(nrow(delhi1) > nrow(delhi0)) {
+  delhi0 <- delhi1
+  patientGraph %>%
+    filter(Contact %in% delhi0$Patient) %>%
+    select(Patient) %>%
+    bind_rows(delhi0) %>%
+    distinct() ->
+    delhi1
+  print(paste(nrow(delhi1), nrow(delhi0)))
+}
+
+```
+
+State-wise growth by TJ or not
+```{r}
+covidindia %>%
+  mutate(TJ=patientnumber %in% delhi0$Patient) %>%
+  rename(State=detectedstate) %>%
+  count(State, TJ, Date) %>%
+  filter(!is.na(Date)) %>%
+  group_by(State, TJ) %>%
+  arrange(Date) %>%
+  mutate(Cumul=cumsum(n)) %>%
+  group_by(State) %>%
+  filter(max(Cumul) > 50) %>%
+  ggplot(aes(x=Date, y=Cumul, fill=TJ)) + geom_col(position='stack') + facet_wrap(~State, scales='free') + theme_minimal() + theme(legend.position = 'none') + scale_fill_brewer(palette='Set1')
+
+```
+```{r}
+p0 <- 0.01
+
+p1 <- 0.70
+p2 <- 0.02  # this is 1 - specificity. Likelihood of false positive given a negative. 
+# Barbie said that spcificity is around 97% or 98%. Let me be conservative and assume 98%. 
+
+pdis <- function(p0, p1, p2) {
+  return(p0 * p1 / (p0 * p1 + (1-p0) * p2))
+}
+
+tibble(p0 = 10^seq(-4, -0.5, 0.01)) %>%
+  mutate(posterior=pdis(p0, p1,p2)) %>%
+  ggplot(aes(x=p0, y=posterior)) + geom_point() + geom_line() + scale_x_continuous("Prior probability of being infected", labels=scales::percent, breaks=seq(0, 0.3, 0.02)) + scale_y_continuous("Likelihood that person who tests positive actually has disease", labels=scales::percent) + theme_minimal() + labs(title="Likelihood that person who tests positive actually has disease", subtitle=paste("Actual likelihood of having disease when test has", scales::percent(p1, 0.01), "accuracy, and false positive rate of", scales::percent(p2/(p1+p2), 0.01)), caption="© Karthik Shashidhar (@karthiks)" ) + theme(title=element_text(face='bold', size=16, family='Helvetica'), axis.text = element_text(face='bold'))
+
+```
+
+```{r}
+pdis(10000000/1.35e9, 0.7, 0.02)
+```
+
+```{r}
+pdis(0.05, 0.7, 0.02)
+```
+
+```{r}
+999/(999+99)
+
+9990/(9990+90)
+```
+
+
+
+
+
+```{r}
+covidindia %>%
+  filter(!is.na(Date)) %>%
+  rename(State=detectedstate, District=detecteddistrict) %>%
+  count(State,District, Date)  %>%
+  group_by(State) %>%
+  complete(District, Date, fill=list(n=0)) %>%
+  group_by(State, Date) %>%
+  mutate(StateN=sum(n)) %>%
+  group_by(State, District) %>%
+  arrange(Date) %>%
+  group_by(State) %>%
+  filter(max(StateN)>= 10) %>%
+  group_by(State, District) %>%
+  mutate(Range=max(Date) - min(Date)) %>%
+  ungroup() %>%
+  filter(Range >= 8) %>%
+  filter(max(n) >= 5) %>%
+  arrange(State, District, Date) %>%
+  group_by(State, District) %>%
+  mutate(
+    Total=cumsum(n),
+    Latest=Total[Date==max(Date)],
+    Back1week=Total[Date==(max(Date)-7)],
+    Back3days=Total[Date==(max(Date)-2)],
+    WeekGrowth=Latest/Back1week-1,
+    Growth3=Latest/Back3days-1,
+    colour=ifelse((Back1week==0 & Latest > 0) | WeekGrowth > 1 | Growth3 > 0.7, 'red', 'orange')
+  ) %>%
+  filter(max(Total) >= 20) %>%
+  ggplot(aes(x=Date, y=Total, col=colour)) + geom_line(lwd=2) + facet_wrap(~State+District, scales='free') + theme_minimal() + scale_y_continuous('') + scale_colour_identity() + theme(strip.text = element_text(face='bold', hjust=0))
+
+```
+

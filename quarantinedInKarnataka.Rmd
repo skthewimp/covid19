@@ -1,0 +1,81 @@
+---
+title: "Quarantined in Karnataka"
+output: html_notebook
+---
+
+Karnataka hs put out data of everyone home quarantined for Covid-19 suspicion. Here is some analysis of that
+
+First get and download the data
+```{r}
+setwd('~/Documents/work/data work')
+require(tidyverse)
+require(rvest)
+require(readxl)
+```
+
+```{r}
+'https://karunadu.karnataka.gov.in/hfw/kannada/Pages/distwise-home-quarantive.aspx' %>% 
+  read_html() %>%
+  rvest::html_nodes("a") %>%
+  rvest::html_attr("href") %>%
+  str_subset('.xls')  -> files
+paste0('https://karunadu.karnataka.gov.in/', files) -> files
+
+quarantined <- tibble() 
+for(i in 15:28) {
+  fl <- files[i]
+  tmp <- tempfile()
+  download.file(fl, tmp, method='curl')
+  read_excel(tmp) %>%
+    mutate(File=fl) %>% 
+    mutate(PIN=as.character(PIN)) %>%
+    bind_rows(quarantined) ->
+    quarantined
+  print(paste(fl, which(files==fl)[1], Sys.time(),nrow(quarantined)))
+}
+
+quarantined  %>% 
+  distinct() ->
+  quarantined
+
+```
+
+```{r}
+quarantined
+```
+
+Let's look at when they arrived
+```{r}
+quarantined %>%
+  rename(Date=`Date of Arrival`) %>%
+  mutate(Date=as.Date(Date)) %>%
+  count(Date) %>%
+  ggplot(aes(x=Date, y=n)) + geom_point() + geom_line() + theme_minimal() + geom_text(aes(label=n), nudge_y=100) + scale_x_date(date_breaks = '2 days', date_labels = '%d/%m') + scale_y_continuous("Number of cases", breaks=c()) + ggtitle("Number of people quarantined by day of arrival")
+```
+
+
+Where are the quarantined people from? 
+```{r}
+quarantined %>%
+  count(`Final District/ City`, sort=T)
+
+quarantined %>%
+  mutate(`District/ City`=str_to_title(`District/ City`)) %>%
+  count(`District/ City`, sort=T)
+```
+
+```{r}
+quarantined %>%
+  mutate(PIN=str_replace(PIN, '[^0-9]', '')) %>%
+  count(PIN)
+```
+
+```{r}
+quarantined %>%
+  mutate(Origin=str_to_title(`Port of Origin of journey`)) %>%
+  count(Origin, sort=T)
+```
+```{r}
+save(quarantined, file='quarantinedInKarnataka.RData')
+```
+

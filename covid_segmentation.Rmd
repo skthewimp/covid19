@@ -1,0 +1,443 @@
+---
+title: "Segmentation"
+output: html_notebook
+---
+
+
+Algorithms to segment the covid19 cases in India. Just guinea pigging here
+
+```{r}
+dailyCases %>%
+  mutate(State=str_to_title(State), District=str_to_title(District), City=str_to_title(City)) %>%
+  group_by(State, District, City) %>%
+  summarise(Cases=sum(Cases)) %>%
+  ungroup() ->
+  totalCases
+```
+
+```{r}
+totalCases
+```
+
+```{r}
+bind_rows(
+  totalCases %>%
+    group_by(State) %>%
+    summarise(Cases=sum(Cases)) %>%
+    ungroup() %>%
+    mutate(Adjusted=Cases*n(), Region=State) %>%
+    arrange(-Adjusted) %>%
+    select(Region, Cases, Adjusted),
+  
+  totalCases %>%
+    filter(!is.na(District)) %>%
+    group_by(State, District) %>%
+    summarise(Cases=sum(Cases)) %>%
+    ungroup() %>%
+    mutate(Adjusted=Cases*n(), Region=paste(District, State, sep=', ')) %>%
+    arrange(-Adjusted) %>%
+    select(Region, Cases, Adjusted),
+  
+  
+  totalCases %>%
+    filter(!is.na(City)) %>%
+    group_by(State, District, City) %>%
+    summarise(Cases=sum(Cases)) %>%
+    ungroup() %>%
+    mutate(Adjusted=Cases*n(), Region=paste(City, District, State, sep=', ')) %>%
+    arrange(-Adjusted) %>%
+    select(Region, Cases, Adjusted)
+) %>%
+  arrange(-Adjusted)
+
+
+```
+How do we account for Delhi? It is 1 level deep but it's also a "leaf node".
+
+Leaf or not shouldn't matter for clustering. And in any case, segments will be shown in descending order of size. 
+
+I should forget for this purpose that Maharashtra is much bigger than Delhi - my algo doesn't know this 
+This depth comparison is only to compare parents to children. Else doesn't matter. Like should we split Maharashtra into Bombay, Thane, Pune and the rest? 
+
+
+Let's say we want top 10. Take top 9 clusters (at whatever level). 10th is "rest of India". Now, if there is one that is the subset of another, then the "superset" needs to be changed to "rest of". Now it might slip out of top 9. That's fully fine. 
+
+Only thing is we don't watn a racing condition. Only other input is number of segments
+
+
+This function is an old and complicated one. Replaced by a simpler one later on 
+```{r}
+
+segmentationOld <- function(totalCases, numSegment) {
+  
+  totalCases %>%
+    group_by(Region=State) %>%
+    summarise(Cases=sum(Cases)) %>%
+    mutate(Level=1) %>%
+    bind_rows(
+      totalCases %>%
+        group_by(Region=District, Parent=State) %>%
+        summarise(Cases=sum(Cases)) %>%
+        mutate(Level=2)
+    ) %>%
+    bind_rows(
+      totalCases %>%
+        group_by(Region=City, Parent=District) %>%
+        summarise(Cases=sum(Cases)) %>%
+        mutate(Level=3)
+    ) %>%
+    filter(!is.na(Region)) %>%
+    arrange(-Cases) ->
+    allSegments
+  
+  allSegments %>%
+    head(numSegment) ->
+    topSegments
+  
+  topSegments %>%
+    inner_join(
+      topSegments %>%
+        transmute(Child=Region, Region=Parent, Level=Level-1, ChildCases=Cases),
+      by = c("Region", "Level")
+    ) -> 
+    kangaroos
+  
+  topSegmentHistory <- tibble()
+  
+  iteration <- 1
+  
+  seenThisBefore <- tibble()
+  
+  while(nrow(kangaroos) > 0 & iteration < numSegment)  {
+    
+    kangaroos %>%
+      group_by(Region, Cases, Level) %>%
+      summarise(ChildCases=sum(ChildCases), Children=paste(Child, collapse=', ')) %>%
+      mutate(
+        NewRegion=paste0(Region, ' - {', Children, '}'),
+        NewCases=Cases-ChildCases
+      ) -> 
+      newSegments
+    
+    allSegments %>%
+      mutate(Hybrid=F) %>%
+      anti_join(
+        newSegments %>%
+          ungroup() %>%
+          select(Region),
+        by='Region'
+      ) %>%
+      bind_rows(
+        newSegments %>%
+          ungroup() %>%
+          select(Region=NewRegion, Cases=NewCases, Level) %>%
+          mutate(Hybrid=T)
+      ) %>%
+      arrange(-Cases) %>%
+      head(numSegment) ->
+      topSegments
+    
+    # topSegments %>%
+    #   inner_join(topSegmentHistory, by=c("Region")) ->
+    #   seenThisBefore
+    # 
+    # print(seenThisBefore)
+    
+    if(nrow(seenThisBefore) > 0)
+    {
+      topSegments
+      
+      break
+    }
+    topSegments %>%
+      separate(Region, c("Region", "Excluded"), ' - ') %>%
+      inner_join(
+        topSegments %>%
+          transmute(Child=Region, Region=Parent, Level=Level-1, ChildCases=Cases),
+        by = c("Region", "Level")
+      ) -> 
+      kangaroos
+    
+    topSegments %>%
+      select(Region, Cases) %>%
+      mutate(Iteration=iteration) %>%
+      bind_rows(topSegmentHistory) ->
+      topSegmentHistory
+    
+    iteration <-iteration + 1
+    
+    print(topSegments)
+    print(kangaroos)
+    
+  }
+  
+  # Add a few lines of code so that all the exclusions are taken care of properly 
+  
+  if(nrow(kangaroos) > 0) {
+    kangaroos %>%
+      group_by(Region, Cases, Level) %>%
+      summarise(ChildCases=sum(ChildCases), Children=paste(Child, collapse=', ')) %>%
+      mutate(
+        NewRegion=paste0(Region, ' - {', Children, '}'),
+        NewCases=Cases-ChildCases
+      ) -> 
+      newSegments
+    topSegments %>%
+      filter(!Region %in% kangaroos$Region) %>%
+      bind_rows(
+        newSegments %>%
+          select(Region=NewRegion, Cases=NewCases)
+      ) ->
+      topSegments
+  }
+  
+  
+  topSegments %>%
+    select(Region, Cases) %>%
+    bind_rows(
+      tibble(
+        Region='Rest',
+        Cases=sum(totalCases$Cases) - sum(topSegments$Cases)
+      )
+    ) %>%
+    mutate(Percentage=Cases/sum(Cases)) %>%
+    return()
+}
+
+
+```
+
+
+So we can have a cycling condition. Need to deal with this.
+
+Basically we need ot maintain a history of all the things produced and then cut when something repeats (thefirst thing that repeats gets returned) 
+
+
+
+
+Need to figure out something far simpler. This is leading to mad race conditions
+
+```{r}
+segmentation <- function(totalCases, numSegment) {
+  
+  totalCases %>%
+    group_by(Region=State) %>%
+    summarise(Cases=sum(Cases)) %>%
+    mutate(Level=1, Type='State') %>%
+    bind_rows(
+      totalCases %>%
+        group_by(Region=District, Parent=State) %>%
+        summarise(Cases=sum(Cases)) %>%
+        mutate(Level=2, Type='District')
+    ) %>%
+    bind_rows(
+      totalCases %>%
+        group_by(Region=City, Parent=District) %>%
+        summarise(Cases=sum(Cases)) %>%
+        mutate(Level=3, Type='City')
+    ) %>%
+    filter(!is.na(Region)) %>%
+    arrange(-Cases) ->
+    allSegments
+  
+  allSegments %>%
+    head(numSegment) ->
+    topSegments
+  
+  topSegments %>%
+    inner_join(
+      topSegments %>%
+        transmute(Child=Region, Region=Parent, Level=Level-1, ChildCases=Cases),
+      by = c("Region", "Level")
+    ) -> 
+    kangaroos
+  if(nrow(kangaroos) > 0) {
+    kangaroos %>%
+      group_by(Region, Cases, Level) %>%
+      summarise(ChildCases=sum(ChildCases), Children=paste(Child, collapse=', ')) %>%
+      mutate(
+        NewRegion=paste0(Region, ' - {', Children, '}'),
+        NewCases=Cases-ChildCases
+      ) -> 
+      newSegments
+    topSegments %>%
+      filter(!Region %in% kangaroos$Region) %>%
+      bind_rows(
+        newSegments %>%
+          ungroup() %>%
+          select(Region=NewRegion, Cases=NewCases, Level)
+      ) ->
+      topSegments
+  }
+  
+  
+  topSegments %>%
+    ungroup() %>%
+    #select(Region, Cases) %>%
+    arrange(-Cases) %>%
+    bind_rows(
+      tibble(
+        Region='Rest of India',
+        Cases=sum(totalCases$Cases) - sum(topSegments$Cases)
+      )
+    ) %>%
+    mutate(Percentage=Cases/sum(Cases)) %>%
+    return()
+}
+
+
+
+```
+
+```{r}
+
+sgmt <- segmentation(totalCases, 15)
+totalCases %>%
+  mutate(Index=1:n()) ->
+  totalCases
+
+totalCases %>%
+  gather(Type, Region, -Cases, -Index)  %>%
+  filter(!is.na(Region)) %>%
+  inner_join(sgmt %>% mutate(Label=Region) %>% select(Type, Label, Region), by = c("Type", "Region")) ->
+  class1
+
+totalCases %>%
+  filter(!Index %in% class1$Index) %>%
+  gather(Type, Region, -Cases, -Index)  %>%
+  filter(!is.na(Region)) %>%
+  inner_join(
+    sgmt %>%
+      arrange(Level) %>%
+      fill(Type) %>%
+      mutate(Label=Region) %>%
+      separate(Region, c("Region", "Excluded"), ' - ') %>%
+      select(Region, Type, Label), 
+    by = c("Type", "Region")
+  ) -> 
+  class2
+
+class1 %>%
+  distinct(Index, Label) %>%
+  bind_rows(
+    class2 %>% 
+      distinct(Index, Label)
+  ) %>%
+  right_join(totalCases, by='Index') %>%
+  mutate(Label=coalesce(Label, 'Rest of India')) ->
+  totalCasesWithLabels
+
+dailyCases %>%
+  mutate(State=str_to_title(State), District=str_to_title(District), City=str_to_title(City)) %>%
+  inner_join(
+    totalCasesWithLabels %>%
+      select(State, District, City, Label), 
+    by = c("State", "District", "City")
+  ) ->
+  dailyCasesWithLabels
+
+
+
+```
+
+
+```{r}
+labelCaseLines <- function(dailyCases, numSegment) {
+  dailyCases %>%
+    filter(Cases > 0) %>%
+    mutate(State=str_to_title(State), District=str_to_title(District), City=str_to_title(City)) %>%
+    group_by(State, District, City) %>%
+    summarise(Cases=sum(Cases)) %>%
+    ungroup() ->
+    totalCases
+  
+  sgmt <- segmentation(totalCases, numSegment)
+  totalCases %>%
+    mutate(Index=1:n()) ->
+    totalCases
+  
+  totalCases %>%
+    gather(Type, Region, -Cases, -Index)  %>%
+    filter(!is.na(Region)) %>%
+    inner_join(sgmt %>% mutate(Label=Region) %>% select(Type, Label, Region), by = c("Type", "Region")) ->
+    class1
+  
+  totalCases %>%
+    filter(!Index %in% class1$Index) %>%
+    gather(Type, Region, -Cases, -Index)  %>%
+    filter(!is.na(Region)) %>%
+    inner_join(
+      sgmt %>%
+        arrange(Level) %>%
+        fill(Type) %>%
+        mutate(Label=Region) %>%
+        filter(str_detect(Region, ' - ')) %>%
+        separate(Region, c("Region", "Excluded"), ' - ') %>%
+        select(Region, Type, Label), 
+      by = c("Type", "Region")
+    ) -> 
+    class2
+  
+  class1 %>%
+    distinct(Index, Label) %>%
+    bind_rows(
+      class2 %>% 
+        distinct(Index, Label)
+    ) %>%
+    right_join(totalCases, by='Index') %>%
+    mutate(Label=coalesce(Label, 'Rest of India')) ->
+    totalCasesWithLabels
+  
+  dailyCases %>%
+    mutate(State=str_to_title(State), District=str_to_title(District), City=str_to_title(City)) %>%
+    inner_join(
+      totalCasesWithLabels %>%
+        select(State, District, City, Label), 
+      by = c("State", "District", "City")
+    ) ->
+    dailyCasesWithLabels
+  
+  return(dailyCasesWithLabels)
+
+}
+```
+
+```{r}
+labelCaseLines(dailyCases %>% filter(Date >= Sys.Date()-3), 19) %>%
+  distinct(State, District, City, Label) %>%
+  inner_join(dailyCases, by = c("State", "District", "City")) %>%
+  filter(Cases > 0) %>%
+  group_by(Date, Label) %>%
+  summarise(Cases=sum(Cases)) %>%
+  ggplot(aes(x=Date, y=Cases)) + geom_point() + geom_line() + geom_smooth() + facet_wrap(~Label) + theme_bw()
+```
+
+```{r}
+labelCaseLines(dailyCases %>% filter(Date >= Sys.Date()-3), 7) %>%
+  distinct(State, District, City, Label) %>%
+  inner_join(dailyCases, by = c("State", "District", "City")) %>%
+  filter(Cases > 0) %>%
+  group_by(Date, Label) %>%
+  summarise(Cases=sum(Cases)) %>%
+  ggplot(aes(x=Date, y=Cases, col=Label)) + geom_point(size=0.5)+ geom_smooth(se=F)  + theme_bw() + scale_color_brewer(palette='Set1')
+```
+
+```{r}
+labelCaseLines(dailyCases %>% filter(Date >= Sys.Date()-3), 11) %>%
+  distinct(State, District, City, Label) %>%
+  inner_join(dailyCases, by = c("State", "District", "City")) %>%
+  group_by(Label, Date) %>%
+  summarise(Cases=sum(Cases)) %>%
+  arrange(Label, Date) %>%
+  group_by(Label) %>%
+  mutate(
+    Total=cumsum(Cases),
+    Growth3=log(Total/lag(Total,3))/3,
+    DoublingDays=log(2)/Growth3,
+    LastGrowth=Growth3[Date==max(Date)],
+    LastDouble=DoublingDays[Date==max(Date)]
+    ) %>%
+  ggplot(aes(x=Date, y=DoublingDays)) + geom_point() + geom_line()  + scale_y_continuous("Doubling Time (number of days)") + theme_minimal()  + labs(title="Covid Cases In India: Days to Double", subtitle = "Calculated using 3-day lagging compounded daily growth rate", caption="© Karthik Shashidhar (@karthiks)" ) + scale_x_date('') + facet_wrap(~reorder(paste0(Label, ': ', round(LastDouble), ' days to double'), LastGrowth), scales='free') + theme(strip.text = element_text(face='bold', hjust=0), panel.grid.minor = element_blank(), axis.text = element_text(face='bold'))
+  
+```
+
